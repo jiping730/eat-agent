@@ -1,60 +1,76 @@
 import sys
 import os
-# 将项目根目录（front 的上一级）加入 Python 路径
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import time
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
-from agent.agent_executor import create_agent_executor
-from utils.callbacks import PerformanceCallbackHandler
 
-app = Flask(__name__,
-            template_folder='templates',      # 指定模板文件夹路径
-            static_folder='static')           # 指定静态文件夹路径
+app = Flask(__name__)
+from core.workflow import create_workflow
+from core.memory import MemoryManager
+import uuid
+
+workflow = None
+memory_mgr = None
+
+try:
+    workflow = create_workflow()
+    memory_mgr = MemoryManager()
+    print("工作流和记忆管理器初始化成功")
+except Exception as e:
+    print("初始化工作流或记忆管理器失败:", e)
+    import traceback
+    traceback.print_exc()
 CORS(app)
-
-# 全局 Agent 执行器
-agent_executor = None
-perf_callback = PerformanceCallbackHandler()
-
-def get_agent():
-    global agent_executor
-    if agent_executor is None:
-        agent_executor = create_agent_executor(callbacks=[perf_callback])
-    return agent_executor
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
 @app.route('/ask', methods=['POST'])
+@app.route('/ask', methods=['POST'])
 def ask():
-    data = request.get_json()
-    question = data.get('question', '')
-    if not question:
-        return jsonify({'error': '问题不能为空'}), 400
-
-    # 重置性能统计
-    perf_callback.total_retrievals = 0
-    perf_callback.start_time = None
-    perf_callback.end_time = None
-
     try:
-        agent = get_agent()
-        start = time.time()
-        response = agent.invoke({"input": question})
-        end = time.time()
-        answer = response.get('output', '')
-        stats = perf_callback.get_stats()
-        response_time = stats['response_time'] if stats['response_time'] else (end - start)
+        data = request.get_json()
+        question = data.get('question', '')
+        user_id = data.get('user_id', str(uuid.uuid4()))
+
+        # 如果工作流未初始化，返回错误
+        if workflow is None or memory_mgr is None:
+            return jsonify({'error': '工作流未初始化'}), 500
+
+        initial_state = {
+            "messages": [{"role": "user", "content": question}],
+            "user_id": user_id,
+            "memory_context": [],
+            "current_goal": "",
+            "plan": [],
+            "tool_outputs": {},
+            "reflection": "",
+            "iteration": 0
+        }
+
+        config = {"configurable": {"thread_id": user_id}}
+        print("开始调用 workflow.invoke")
+        final_state = workflow.invoke(initial_state, config=config)
+        print("workflow.invoke 调用完成")
+
+        memory_mgr.add_interaction(question, final_state["messages"][-1]["content"], user_id)
+
         return jsonify({
-            'answer': answer,
-            'response_time': round(response_time, 2),
-            'retrieval_count': stats['retrieval_count']
+            "answer": final_state["messages"][-1]["content"],
+            "response_time": final_state.get("response_time", 0),
+            "retrieval_count": len(final_state["tool_outputs"])
         })
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    try:
+        app.run(debug=False, port=5000)
+    except Exception as e:
+        print("Flask run error:", e)
+        import traceback
+        traceback.print_exc()
