@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>轻松食 · 智能营养助手</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="chat-container">
+        <header class="chat-header">
+            <h1>🥗 轻松食 · 营养问答</h1>
+            <p>问我任何关于食物热量、餐食搭配的问题</p>
+        </header>
+        <div class="chat-messages" id="chatMessages">
+            <div class="message bot-message">
+                <div class="avatar">🤖</div>
+                <div class="content">你好！我是你的营养助手，可以帮你查询食物热量、推荐餐食组合。有什么可以帮你的吗？</div>
+            </div>
+        </div>
+        <div class="chat-input-area">
+            <input type="text" id="questionInput" placeholder="输入你的问题...（例如：鸡胸肉的热量）" autofocus>
+            <button id="sendBtn">发送</button>
+        </div>
+    </div>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>

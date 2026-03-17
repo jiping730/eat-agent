@@ -1,0 +1,7 @@
+langchain==0.1.20
+langchain-community>=0.0.38,<0.1
+faiss-cpu==1.8.0
+python-dotenv==1.0.1
+pydantic>=2.0
+pydantic-settings==2.2.1
+zhipuai==2.1.5.20250825
