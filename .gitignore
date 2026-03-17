@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+
+# 虚拟环境
+.venv/
+env/
+venv/
+ENV/
+
+# 向量库索引
+faiss_index/
+*.bin
+*.pkl
+
+# 本地配置
+.env
+config_local.py
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 日志
+*.log
+
+# 临时文件
+tmp/
+temp/
