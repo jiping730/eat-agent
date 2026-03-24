@@ -63,30 +63,28 @@ function hideTyping() {
 async function sendQuestion() {
     const question = questionInput.value.trim();
     if (!question) return;
-
-    // 显示用户消息
     addMessage(question, true);
     questionInput.value = '';
     sendBtn.disabled = true;
-
-    // 显示加载
     showTyping();
+
+    // 获取或创建用户 ID（存储在 localStorage）
+    let userId = localStorage.getItem('userId');
+    if (!userId) {
+        userId = crypto.randomUUID();   // 生成唯一 ID
+        localStorage.setItem('userId', userId);
+    }
 
     try {
         const response = await fetch('/ask', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ question })
+            body: JSON.stringify({ question, user_id: userId })
         });
         const data = await response.json();
-
         hideTyping();
-
         if (response.ok) {
-            addMessage(data.answer, false, {
-                time: data.response_time,
-                retrieval: data.retrieval_count
-            });
+            addMessage(data.answer, false, { time: data.response_time, retrieval: data.retrieval_count });
         } else {
             addMessage(`出错了：${data.error || '未知错误'}`, false);
         }

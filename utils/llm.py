@@ -16,12 +16,17 @@ class CustomZhipuChat(LLM):
         return "zhipuai"
 
     def _call(self, prompt: str, stop: Optional[List[str]] = None, **kwargs) -> str:
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=self.temperature
-        )
-        return response.choices[0].message.content
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=self.temperature,
+                timeout=30.0  # 设置超时，避免卡死
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            print(f"LLM调用失败: {e}")
+            return "抱歉，我暂时无法回答这个问题。"
 
 def get_llm():
     return CustomZhipuChat()

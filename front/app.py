@@ -1,5 +1,7 @@
 import sys
 import os
+import time
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flask import Flask, request, jsonify, render_template
@@ -9,6 +11,9 @@ app = Flask(__name__)
 from core.workflow import create_workflow
 from core.memory import MemoryManager
 import uuid
+# 在文件顶部添加
+from collections import defaultdict
+user_histories = defaultdict(list)   # 存储每个用户的消息历史
 
 workflow = None
 memory_mgr = None
@@ -28,38 +33,46 @@ def index():
     return render_template('index.html')
 
 @app.route('/ask', methods=['POST'])
-@app.route('/ask', methods=['POST'])
 def ask():
     try:
         data = request.get_json()
         question = data.get('question', '')
         user_id = data.get('user_id', str(uuid.uuid4()))
+        config = {"configurable": {"thread_id": user_id}}
 
-        # 如果工作流未初始化，返回错误
-        if workflow is None or memory_mgr is None:
-            return jsonify({'error': '工作流未初始化'}), 500
+        # 获取该用户的历史消息（如果有）
+        history = user_histories.get(user_id, [])
+        # 将当前用户问题加入历史
+        history.append({"role": "user", "content": question})
 
+        # 构建初始状态（包含完整历史）
         initial_state = {
-            "messages": [{"role": "user", "content": question}],
+            "messages": history,
             "user_id": user_id,
             "memory_context": [],
             "current_goal": "",
             "plan": [],
             "tool_outputs": {},
             "reflection": "",
-            "iteration": 0
+            "iteration": 0,
+            "followup": False
         }
 
-        config = {"configurable": {"thread_id": user_id}}
-        print("开始调用 workflow.invoke")
+        start = time.time()
         final_state = workflow.invoke(initial_state, config=config)
-        print("workflow.invoke 调用完成")
+        elapsed = time.time() - start
 
-        memory_mgr.add_interaction(question, final_state["messages"][-1]["content"], user_id)
+        # 获取助手回复
+        answer = final_state["messages"][-1]["content"]
+        # 将助手回复也加入历史
+        history.append({"role": "assistant", "content": answer})
+        user_histories[user_id] = history
+
+        memory_mgr.add_interaction(question, answer, user_id)
 
         return jsonify({
-            "answer": final_state["messages"][-1]["content"],
-            "response_time": final_state.get("response_time", 0),
+            "answer": answer,
+            "response_time": round(elapsed, 2),
             "retrieval_count": len(final_state["tool_outputs"])
         })
     except Exception as e:
