@@ -1,6 +1,6 @@
 from langchain.agents import create_react_agent, AgentExecutor
 from langchain_community.chat_models import ChatZhipuAI
-from agent.tools import create_retrieval_tool
+from agent.tools import create_retrieval_tool, create_web_search_tool
 from agent.prompt import react_prompt
 from config import settings
 
@@ -10,7 +10,9 @@ def create_agent_executor(callbacks=None):
         api_key=settings.zhipuai_api_key,
         temperature=0.7
     )
-    tools = [create_retrieval_tool()]
+    retrieval_tool = create_retrieval_tool()
+    web_search_tool = create_web_search_tool()
+    tools = [retrieval_tool, web_search_tool]  # 两个工具
     agent = create_react_agent(llm=llm, tools=tools, prompt=react_prompt)
     agent_executor = AgentExecutor(
         agent=agent,

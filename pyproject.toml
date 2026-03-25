@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-rag"
+version = "1.0.0"
+description = "Agentic RAG 智能营养问答系统"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {text = "MIT"}
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "langchain==0.1.20",
+    "langchain-community>=0.0.38,<0.1",
+    "faiss-cpu==1.8.0",
+    "python-dotenv==1.0.1",
+    "pydantic>=2.0",
+    "pydantic-settings==2.2.1",
+    "zhipuai==2.1.5.20250825",
+    "mcp>=0.1.0",
+    "neo4j>=5.0.0",
+    "chromadb>=0.4.0",
+    "firecrawl-py>=0.0.5",
+    "redis>=5.0.0",
+    "flask",
+    "flask-cors",
+    "langgraph>=0.0.20",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black",
+    "isort",
+    "mypy",
+    "pytest",
+    "pytest-cov",
+]
+eval = [
+    "ragas>=0.2.0",
+    "datasets",
+    "pandas",
+]
+
+[project.urls]
+Homepage = "https://github.com/yourusername/agentic-rag"
+Repository = "https://github.com/yourusername/agentic-rag.git"
+Issues = "https://github.com/yourusername/agentic-rag/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent*", "rag*", "core*", "utils*", "mcp_servers*", "front*"]
+exclude = ["tests", "evaluation", "data", "faiss_index", "logs"]
+
+# 可选工具配置
+[tool.black]
+line-length = 120
+target-version = ['py312']
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
