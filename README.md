@@ -93,6 +93,8 @@ LangGraph Workflow
 python -m venv .venv
 .venv\Scripts\activate      # Windows
 # source .venv/bin/activate  # Linux/macOS
+copy .env.example .env      # Windows
+# cp .env.example .env      # Linux/macOS
 pip install -r requirements.txt
 ```
 
@@ -125,6 +127,13 @@ python main.py
 ```bash
 python front/app.py
 # 访问 http://localhost:5000
+```
+
+**Docker 模式：**
+
+```bash
+docker build -t eat-agent .
+docker run --env-file .env -p 5000:5000 eat-agent
 ```
 
 ## 配置说明

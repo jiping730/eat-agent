@@ -2,15 +2,23 @@ import os
 from typing import Optional
 
 from dotenv import load_dotenv
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 load_dotenv()
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+        extra="ignore",
+    )
+
     # 基础配置
     # API Key 由部署环境注入；本地开发和离线测试允许为空，调用层会走兜底逻辑。
-    zhipuai_api_key: Optional[str] = os.getenv("ZHIPUAI_API_KEY")
+    zhipuai_api_key: Optional[str] = None
+    tavily_api_key: Optional[str] = None
     embedding_model: str = "embedding-2"
     llm_model: str = "glm-4-flash"
 
@@ -31,9 +39,17 @@ class Settings(BaseSettings):
 
     # GraphRAG 配置
     use_graphrag: bool = False  # 临时关闭 GraphRAG
-    neo4j_uri: str = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-    neo4j_user: str = os.getenv("NEO4J_USER", "neo4j")
-    neo4j_password: str = os.getenv("NEO4J_PASSWORD", "password")
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: Optional[str] = None
+
+    def startup_warnings(self) -> list[str]:
+        warnings: list[str] = []
+        if not self.zhipuai_api_key:
+            warnings.append("未配置 ZHIPUAI_API_KEY，将使用离线降级能力。")
+        if self.use_graphrag and not self.neo4j_password:
+            warnings.append("USE_GRAPHRAG 已开启，但未配置 NEO4J_PASSWORD，GraphRAG 将不可用。")
+        return warnings
 
 
 settings = Settings()

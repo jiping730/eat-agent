@@ -81,6 +81,9 @@ def create_workflow(
             if any(word in last_msg for word in ["搜索", "查一下", "最新", "网上", "新闻"]):
                 state["current_goal"] = "web_search"
                 return state
+            if any(word in last_msg for word in ["减肥", "减脂", "控制体重", "增肌", "饮食目标", "健康饮食"]):
+                state["current_goal"] = "meal_planner"
+                return state
             if any(word in last_msg for word in ["吃", "餐", "菜", "搭配", "食谱", "餐食"]):
                 state["current_goal"] = "meal_planner"
                 return state

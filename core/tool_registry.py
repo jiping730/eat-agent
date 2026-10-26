@@ -8,7 +8,6 @@ can delegate to the same handlers without becoming a second implementation.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -64,7 +63,7 @@ def retrieve_knowledge(query: str, *, score_threshold: float = 2.0) -> str:
 def search_web(query: str) -> str:
     """Run the canonical Tavily search implementation with a safe fallback."""
 
-    api_key = os.getenv("TAVILY_API_KEY")
+    api_key = settings.tavily_api_key
     if not api_key:
         return "联网搜索未配置：缺少 TAVILY_API_KEY 环境变量。"
     try:

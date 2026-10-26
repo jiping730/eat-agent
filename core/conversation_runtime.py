@@ -9,6 +9,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
+from config import settings
 from core.memory import MemoryManager
 from core.tool_registry import build_default_tool_registry
 from core.workflow import create_workflow
@@ -40,6 +41,8 @@ class ConversationRuntime:
     """Own the one canonical way to invoke the agent workflow."""
 
     def __init__(self, workflow: Any | None = None, memory_mgr: Any | None = None) -> None:
+        for warning in settings.startup_warnings():
+            print(f"配置警告: {warning}")
         self.memory_mgr = memory_mgr or MemoryManager()
         self.tool_registry = build_default_tool_registry()
         self.workflow = workflow or create_workflow(

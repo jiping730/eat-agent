@@ -128,7 +128,7 @@ async function sendQuestion(questionOverride = null) {
 }
 
 // 事件监听
-sendBtn.addEventListener('click', sendQuestion);
+sendBtn.addEventListener('click', () => sendQuestion());
 questionInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') sendQuestion();
 });

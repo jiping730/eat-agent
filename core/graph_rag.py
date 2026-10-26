@@ -7,6 +7,8 @@ class GraphRAGEngine:
         if not settings.use_graphrag:
             self.driver = None
             return
+        if not settings.neo4j_password:
+            raise RuntimeError("USE_GRAPHRAG 已开启，但未配置 NEO4J_PASSWORD")
         self.driver = GraphDatabase.driver(
             settings.neo4j_uri,
             auth=(settings.neo4j_user, settings.neo4j_password)
