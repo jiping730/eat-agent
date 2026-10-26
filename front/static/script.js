@@ -98,12 +98,17 @@ async function sendQuestion(questionOverride = null) {
         userId = crypto.randomUUID();   // 生成唯一 ID
         localStorage.setItem('userId', userId);
     }
+    let conversationId = localStorage.getItem('conversationId');
+    if (!conversationId) {
+        conversationId = crypto.randomUUID();
+        localStorage.setItem('conversationId', conversationId);
+    }
 
     try {
         const response = await fetch('/ask', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ question, user_id: userId })
+            body: JSON.stringify({ question, user_id: userId, conversation_id: conversationId })
         });
         const data = await response.json();
         hideTyping();

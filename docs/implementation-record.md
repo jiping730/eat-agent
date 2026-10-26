@@ -11,6 +11,7 @@
 | Grill Engine | 实现信息完整性检查和多轮追问 | `0689322` | 已完成 |
 | P01 | 统一 Web、CLI、旧 Agent、MCP 的 Agent 执行架构 | `9a3b88a` | 已完成 |
 | P02 | 完成配置、依赖、Docker、离线降级和运行验收 | `d232d9c` | 已完成 |
+| P03 | 持久化会话、生产运行加固和安全验收 | 本次提交 | 已完成 |
 
 实施时间：2026-10-26。
 
@@ -288,14 +289,53 @@ sendBtn.addEventListener('click', () => sendQuestion());
 
 修复后重新构建镜像，并完成浏览器三轮对话验证。
 
-## 5. 实际验收记录
+## 5. P03：持久化与生产运行加固
 
-### 5.1 自动化测试
+### 5.1 实际完成的代码
+
+P03 将“追问状态只存在进程内存中”的原型能力改造成可重启、可部署的会话服务：
+
+- 新增 `core/persistence.py`，使用 SQLAlchemy 持久化 `conversations` 和 `messages`。
+- 新增 Alembic 配置和初始迁移 `migrations/versions/0001_initial_persistence.py`。
+- `ConversationRuntime` 每轮从数据库恢复历史消息、当前目标和 `GrillContext`，回答后保存本轮消息和追问状态。
+- 引入 `conversation_id` 和 `request_id`，支持前端恢复会话和请求级排查；同一请求重复保存具备幂等性。
+- 使用会话级锁保护并发请求，避免同一会话的上下文交叉写入。
+- 显式 SQLite URL 会自动建表，方便本地开发和单元测试；生产 PostgreSQL 仍由 Alembic 管理。
+
+### 5.2 API 与安全加固
+
+- 新增 `/healthz` 和 `/readyz`，分别用于进程存活和数据库就绪检查。
+- 支持通过 `X-API-Key` 开启 API Key 鉴权；首页和健康检查保持可访问。
+- 增加请求体大小限制、JSON 对象校验、统一错误结构和 `X-Request-ID`。
+- 增加按客户端地址的滑动窗口限流。
+- 增加 JSON 结构化请求日志，记录请求 ID、路径、状态码和响应时间。
+- 会话按 `user_id` 隔离；其他用户访问已有 `conversation_id` 返回 HTTP 403。
+- 前端将 `conversation_id` 持久化到浏览器 `localStorage`，后续请求继续使用同一会话。
+
+### 5.3 部署改造
+
+- `docker-compose.yml` 新增 PostgreSQL、应用服务、持久化卷和健康检查。
+- 应用容器启动时先执行 `alembic upgrade head`，再使用 Gunicorn 启动 2 个 worker。
+- 数据库和应用分别通过 Compose 服务名通信，应用数据和 PostgreSQL 数据使用命名卷保存。
+- 最终镜像为 `eat-agent:p03`，实际运行地址为 `http://127.0.0.1:5000`。
+
+### 5.4 P03 专项测试
+
+新增 `test_p03_persistence.py`，覆盖：
+
+- 会话和消息往返持久化。
+- 相同 `request_id` 重复写入的幂等性。
+- 新 Runtime 实例恢复旧 Runtime 写入的历史消息。
+- 不同用户访问同一会话时的权限拒绝。
+
+## 6. 实际验收记录
+
+### 6.1 自动化测试
 
 在 Linux Docker 生产镜像环境内执行：
 
 ```text
-14 passed in 0.79s
+17 passed in 1.66s
 ```
 
 测试覆盖了：
@@ -307,8 +347,9 @@ sendBtn.addEventListener('click', () => sendQuestion());
 - 最大追问次数和降级。
 - 新意图切换。
 - 会话运行时和统一架构契约。
+- P03 数据库持久化、重启恢复和用户隔离。
 
-### 5.2 API 验收
+### 6.2 API 验收
 
 使用同一个 `user_id` 调用 `/ask`：
 
@@ -320,7 +361,15 @@ sendBtn.addEventListener('click', () => sendQuestion());
 
 首页 `GET /` 返回 HTTP 200，`POST /ask` 返回 HTTP 200。
 
-### 5.3 浏览器验收
+P03 还实际验证了：
+
+- `/healthz` 和 `/readyz` 均返回 HTTP 200。
+- 开启 API Key 时，无 Key 返回 HTTP 401，正确 Key 返回 HTTP 200。
+- 非法 JSON 请求体返回 HTTP 400。
+- 其他用户访问已有会话返回 HTTP 403。
+- 应用容器重启后，原会话继续返回下一项追问，历史没有丢失。
+
+### 6.3 浏览器验收
 
 在真实浏览器页面中完成：
 
@@ -331,22 +380,23 @@ sendBtn.addEventListener('click', () => sendQuestion());
 5. 点击“没有过敏或忌口”。
 6. 页面显示“已完成回答”。
 
-### 5.4 代码和交付检查
+P03 完成后又在真实浏览器中验证了“我想增肌 → 晚餐 → 没有过敏或忌口”三轮流程，候选按钮、追问状态和最终回答状态均正常。由于当前环境未配置模型 Key，最终回答使用项目已有的离线降级能力。
+
+### 6.4 代码和交付检查
 
 - `git diff --check` 通过。
-- 工作区提交完成。
-- 最新提交为 `d232d9c`。
-- 最新 Docker 容器保持运行。
+- P03 工作区改动已完成测试，待本次提交入库。
+- 最新 Docker 容器保持运行，PostgreSQL 和应用健康检查通过。
 
-## 6. 当前已知边界
+## 7. 当前已知边界
 
-本记录只记录已经完成的 P01/P02，不把后续计划写成已完成能力。
+本记录只记录已经实际完成的 Grill Engine、P01、P02 和 P03，不把后续计划写成已完成能力。
 
 当前仍有以下边界：
 
-- 会话主要保存在进程内存中，服务重启后不会自动恢复。
-- 当前没有用户认证、权限和限流系统。
-- 生产环境还应使用 Gunicorn 等正式 WSGI 服务器。
-- 还没有完整的 CI/CD、监控、告警和链路追踪。
+- 当前 API Key 是单实例配置，尚未接入完整的用户认证、Token 轮换和 RBAC。
+- 限流器当前是单进程内存实现，多副本部署时应替换为 Redis 等共享限流存储。
+- 还没有完整的 CI/CD、指标监控、告警和分布式链路追踪。
+- PostgreSQL 备份、恢复演练、TLS 和更细粒度的数据访问策略仍需按生产环境补齐。
 - 未配置模型 Key 时只能使用离线降级能力，不能获得完整的模型生成答案。
 

@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-eat_agent}
+      POSTGRES_USER: ${POSTGRES_USER:-eat_agent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eat_agent}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  eat-agent:
+    image: eat-agent:p03
+    build: .
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://eat_agent:eat_agent@postgres:5432/eat_agent}
+      ZHIPUAI_API_KEY: ${ZHIPUAI_API_KEY:-}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-glm-4-flash}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embedding-2}
+      AUTO_CREATE_SCHEMA: ${AUTO_CREATE_SCHEMA:-false}
+      APP_ENV: ${APP_ENV:-production}
+      APP_VERSION: ${APP_VERSION:-0.3.0}
+      APP_API_KEY: ${APP_API_KEY:-}
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
+      MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-65536}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "5000:5000"
+    volumes:
+      - app_data:/app/data
+    command:
+      ["sh", "-c", "alembic upgrade head && exec gunicorn --bind 0.0.0.0:5000 --workers 2 --timeout 120 front.app:app"]
+    healthcheck:
+      test:
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  postgres_data:
+  app_data:

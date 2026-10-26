@@ -31,3 +31,8 @@ config_local.py
 # 临时文件
 tmp/
 temp/
+
+# 本地运行数据库
+*.db
+*.sqlite
+*.sqlite3

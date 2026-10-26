@@ -1,4 +1,4 @@
-"""Shared conversation runtime for Web, CLI, and compatibility adapters."""
+"""Shared, durable conversation runtime for Web, CLI, and compatibility adapters."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from typing import Any
 
 from config import settings
 from core.memory import MemoryManager
+from core.persistence import ConversationStore
 from core.tool_registry import build_default_tool_registry
 from core.workflow import create_workflow
 
@@ -24,6 +25,8 @@ class ConversationResponse:
     assumptions: list[str] = field(default_factory=list)
     response_time: float = 0.0
     retrieval_count: int = 0
+    conversation_id: str | None = None
+    request_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -34,57 +37,80 @@ class ConversationResponse:
             "assumptions": self.assumptions,
             "response_time": self.response_time,
             "retrieval_count": self.retrieval_count,
+            "conversation_id": self.conversation_id,
+            "request_id": self.request_id,
         }
 
 
 class ConversationRuntime:
-    """Own the one canonical way to invoke the agent workflow."""
+    """Own the canonical workflow invocation and durable conversation state."""
 
-    def __init__(self, workflow: Any | None = None, memory_mgr: Any | None = None) -> None:
+    def __init__(
+        self,
+        workflow: Any | None = None,
+        memory_mgr: Any | None = None,
+        store: ConversationStore | None = None,
+    ) -> None:
         for warning in settings.startup_warnings():
             print(f"配置警告: {warning}")
         self.memory_mgr = memory_mgr or MemoryManager()
         self.tool_registry = build_default_tool_registry()
+        self.store = store or ConversationStore()
         self.workflow = workflow or create_workflow(
             memory_mgr=self.memory_mgr,
             tool_registry=self.tool_registry,
         )
-        self._histories: defaultdict[str, list[dict[str, str]]] = defaultdict(list)
         self._locks: defaultdict[str, threading.RLock] = defaultdict(threading.RLock)
 
-    def ask(self, question: str, user_id: str | None = None) -> ConversationResponse:
+    def ask(
+        self,
+        question: str,
+        user_id: str | None = None,
+        conversation_id: str | None = None,
+        request_id: str | None = None,
+    ) -> ConversationResponse:
         if not isinstance(question, str) or not question.strip():
             raise ValueError("question 不能为空")
 
         resolved_user_id = user_id or str(uuid.uuid4())
+        resolved_conversation_id = conversation_id or resolved_user_id
+        resolved_request_id = request_id or str(uuid.uuid4())
         normalized_question = question.strip()
-        with self._locks[resolved_user_id]:
-            return self._ask_locked(normalized_question, resolved_user_id)
+        with self._locks[resolved_conversation_id]:
+            return self._ask_locked(
+                normalized_question,
+                resolved_user_id,
+                resolved_conversation_id,
+                resolved_request_id,
+            )
 
-    def _ask_locked(self, question: str, user_id: str) -> ConversationResponse:
-        history = list(self._histories[user_id])
+    def _ask_locked(
+        self,
+        question: str,
+        user_id: str,
+        conversation_id: str,
+        request_id: str,
+    ) -> ConversationResponse:
+        snapshot = self.store.load(conversation_id, user_id)
         user_message = {"role": "user", "content": question}
-        if history:
-            initial_state: dict[str, Any] = {"messages": [user_message], "user_id": user_id}
-        else:
-            initial_state = {
-                "messages": [user_message],
-                "user_id": user_id,
-                "memory_context": [],
-                "current_goal": "",
-                "plan": [],
-                "tool_outputs": {},
-                "reflection": "",
-                "iteration": 0,
-                "followup": False,
-                "grill_context": {},
-                "grill_result": {},
-            }
+        initial_state: dict[str, Any] = {
+            "messages": [*snapshot.messages, user_message],
+            "user_id": user_id,
+            "memory_context": [],
+            "current_goal": snapshot.current_goal or "",
+            "plan": [],
+            "tool_outputs": {},
+            "reflection": "",
+            "iteration": 0,
+            "followup": False,
+            "grill_context": snapshot.grill_context,
+            "grill_result": {},
+        }
 
         started_at = time.perf_counter()
         final_state = self.workflow.invoke(
             initial_state,
-            config={"configurable": {"thread_id": user_id}},
+            config={"configurable": {"thread_id": conversation_id}},
         )
         elapsed = time.perf_counter() - started_at
 
@@ -92,8 +118,6 @@ class ConversationRuntime:
             message for message in final_state.get("messages", []) if message.get("role") == "assistant"
         ]
         answer = assistant_messages[-1]["content"] if assistant_messages else "暂时无法生成回答。"
-        history.extend([user_message, {"role": "assistant", "content": answer}])
-        self._histories[user_id] = history
 
         grill_result = final_state.get("grill_result", {}) or {}
         grill_action = grill_result.get("action")
@@ -105,13 +129,29 @@ class ConversationRuntime:
             "fallback": "clarification",
             "pending_confirmation": "confirmation",
         }.get(grill_action, "answer")
+        target_field = grill_result.get("target_field")
+        grill_context = final_state.get("grill_context", {}) or {}
+
+        self.store.save_turn(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            request_id=request_id,
+            user_message=question,
+            assistant_message=answer,
+            grill_context=grill_context,
+            current_goal=final_state.get("current_goal"),
+            response_type=response_type,
+            target_field=target_field,
+        )
 
         return ConversationResponse(
             answer=answer,
             type=response_type,
-            target_field=grill_result.get("target_field"),
+            target_field=target_field,
             options=grill_result.get("candidates", []),
             assumptions=grill_result.get("assumptions", []),
             response_time=round(elapsed, 2),
             retrieval_count=len(final_state.get("tool_outputs", {})),
+            conversation_id=conversation_id,
+            request_id=request_id,
         )

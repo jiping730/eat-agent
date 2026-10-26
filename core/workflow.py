@@ -2,7 +2,6 @@ import operator
 from typing import TypedDict, Annotated, List, Dict, Any
 import traceback
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
 from core.memory import MemoryManager
 from core.graph_rag import GraphRAGEngine
 from utils.llm import get_llm
@@ -27,6 +26,7 @@ class AgentState(TypedDict):
 def create_workflow(
     memory_mgr: MemoryManager | None = None,
     tool_registry: ToolRegistry | None = None,
+    checkpointer: Any | None = None,
 ):
     # 初始化组件
     print("正在初始化 MemoryManager...")
@@ -420,6 +420,7 @@ def create_workflow(
     workflow.add_edge("generate_answer", "reflect")
     workflow.add_edge("reflect", END)
 
-    memory = MemorySaver()
-    app = workflow.compile(checkpointer=memory)
+    # P03 将会话和 GrillContext 持久化到 ConversationStore；默认不再依赖
+    # 进程内 MemorySaver，避免多 worker 或容器重启后出现状态不一致。
+    app = workflow.compile(checkpointer=checkpointer) if checkpointer is not None else workflow.compile()
     return app

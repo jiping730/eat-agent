@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 from typing import Optional
 
@@ -21,6 +23,17 @@ class Settings(BaseSettings):
     tavily_api_key: Optional[str] = None
     embedding_model: str = "embedding-2"
     llm_model: str = "glm-4-flash"
+
+    # P03 持久化与生产运行配置
+    app_env: str = "development"
+    app_version: str = "0.3.0"
+    database_url: str = "sqlite:///data/app.db"
+    auto_create_schema: bool = True
+    app_api_key: Optional[str] = None
+    cors_origins: str = "*"
+    max_request_bytes: int = 64 * 1024
+    rate_limit_per_minute: int = 120
+    log_level: str = "INFO"
 
     # 路径配置
     BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
@@ -50,6 +63,11 @@ class Settings(BaseSettings):
         if self.use_graphrag and not self.neo4j_password:
             warnings.append("USE_GRAPHRAG 已开启，但未配置 NEO4J_PASSWORD，GraphRAG 将不可用。")
         return warnings
+
+    def cors_origin_list(self) -> list[str] | str:
+        if self.cors_origins.strip() == "*":
+            return "*"
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
 
 
 settings = Settings()
