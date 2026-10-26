@@ -16,19 +16,21 @@
 
 ```
 agent1/
-├── main.py                  # CLI 入口
+├── main.py                  # CLI 入口（调用统一 ConversationRuntime）
 ├── config.py                # 全局配置（Pydantic Settings）
 ├── .env                     # 环境变量（API Key 等）
 ├── requirements.txt         # 依赖清单
 ├── pyproject.toml           # 项目元数据 & 构建配置
 │
 ├── agent/                   # Agent 核心
-│   ├── agent_executor.py    # ReAct Agent 执行器
+│   ├── agent_executor.py    # 旧入口兼容适配器，转发到统一 Workflow
 │   ├── tools.py             # 工具定义（知识库检索、联网搜索）
 │   └── prompt.py            # ReAct 提示模板
 │
 ├── core/                    # 工作流与记忆
-│   ├── workflow.py          # LangGraph 状态图（意图识别→记忆检索→规划→执行→生成→反思）
+│   ├── conversation_runtime.py # Web、CLI、兼容入口共用的会话运行时
+│   ├── tool_registry.py     # 统一工具注册与执行边界
+│   ├── workflow.py          # LangGraph 状态图（意图识别→记忆检索→Grill→规划→执行→生成）
 │   ├── memory.py            # 短期/长期记忆管理器
 │   ├── graph_rag.py         # GraphRAG 引擎（Neo4j）
 │   └── skills/              # 技能模块
@@ -63,13 +65,19 @@ agent1/
 ## 工作流
 
 ```
-用户输入 → 意图识别 → 记忆检索 → 行动规划 → 工具执行 → 答案生成 → 反思存档
-              │                          │
-              ├─ calorie_query            ├─ 知识库检索
-              ├─ meal_planner             └─ 联网搜索
-              ├─ followup（追问）
-              ├─ web_search
-              └─ general
+Web / CLI / 兼容入口
+          ↓
+ConversationRuntime
+          ↓
+LangGraph Workflow
+          ↓
+意图识别 → 记忆检索 → Grill 信息完整性检查 → 行动规划
+                                      ↓
+                              Tool Registry
+                          ┌──────────┼──────────┐
+                     知识库检索   联网搜索   餐食/热量工具
+                                      ↓
+                              答案生成 → 反思存档
 ```
 
 ## 快速开始

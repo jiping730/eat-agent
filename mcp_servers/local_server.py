@@ -1,19 +1,15 @@
 import sys
-import os
-# 计算项目根目录
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, project_root)
+from pathlib import Path
 
-# 打印调试信息
-print(f"Project root: {project_root}")
-print(f"sys.path[0]: {sys.path[0]}")
-print(f"Contents of rag folder: {os.listdir(os.path.join(project_root, 'rag')) if os.path.exists(os.path.join(project_root, 'rag')) else 'rag folder not found'}")
+project_root = Path(__file__).resolve().parents[1]
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 import asyncio
 import json
 from mcp.server import Server, stdio_server
 from mcp.types import TextContent, Tool
-from rag.retriever import get_retriever_with_score   # 尝试导入
+from core.tool_registry import retrieve_knowledge
 # 创建服务器实例
 server = Server("nutrition-local-server")
 
@@ -49,24 +45,14 @@ async def handle_list_tools() -> list[Tool]:
 
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
-    retriever = get_retriever_with_score()
-
     if name == "calorie_query":
         food = arguments["food"]
-        docs = retriever(f"{food} 热量")
-        if docs:
-            return [TextContent(type="text", text=docs[0].page_content)]
-        else:
-            return [TextContent(type="text", text=f"未找到 {food} 的热量信息。")]
+        return [TextContent(type="text", text=retrieve_knowledge(f"{food} 热量"))]
 
     elif name == "meal_planner":
         calories = arguments["calories"]
         meal_type = arguments["meal_type"]
-        docs = retriever(f"{calories}千卡 {meal_type} 组合")
-        if docs:
-            return [TextContent(type="text", text=docs[0].page_content)]
-        else:
-            return [TextContent(type="text", text=f"未找到 {calories}千卡的{meal_type}组合。")]
+        return [TextContent(type="text", text=retrieve_knowledge(f"{calories}千卡 {meal_type} 组合"))]
 
     else:
         raise ValueError(f"未知工具: {name}")

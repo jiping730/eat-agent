@@ -1,5 +1,5 @@
 import re
-from rag.retriever import get_retriever_with_score
+from core.tool_registry import retrieve_knowledge
 
 
 class CalorieQuerySkill:
@@ -17,9 +17,4 @@ class CalorieQuerySkill:
         food = CalorieQuerySkill.extract_food(input_text)
         if not food:
             return "请告诉我你想查询哪种食物？"
-        retriever = get_retriever_with_score()
-        docs = retriever(f"{food} 热量")
-        if docs:
-            return docs[0].page_content
-        else:
-            return f"抱歉，知识库中未找到 {food} 的热量信息。"
+        return retrieve_knowledge(f"{food} 热量")

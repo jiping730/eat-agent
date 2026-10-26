@@ -8,11 +8,7 @@ from core.graph_rag import GraphRAGEngine
 from utils.llm import get_llm
 from config import settings
 from core.grill_engine import GrillEngine, field_label, get_profile
-
-# 导入工具执行函数
-from agent.tools import retrieval_func
-import os
-from tavily import TavilyClient
+from core.tool_registry import ToolRegistry, build_default_tool_registry
 
 # 定义状态
 class AgentState(TypedDict):
@@ -28,12 +24,16 @@ class AgentState(TypedDict):
     grill_context: Dict[str, Any]
     grill_result: Dict[str, Any]
 
-def create_workflow():
+def create_workflow(
+    memory_mgr: MemoryManager | None = None,
+    tool_registry: ToolRegistry | None = None,
+):
     # 初始化组件
     print("正在初始化 MemoryManager...")
-    memory_mgr = MemoryManager()
+    memory_mgr = memory_mgr or MemoryManager()
     print("MemoryManager 初始化完成")
     grill_engine = GrillEngine()
+    tool_registry = tool_registry or build_default_tool_registry()
 
     # 尝试初始化 GraphRAG，如果失败则禁用
     graph_rag = None
@@ -45,23 +45,6 @@ def create_workflow():
         except Exception as e:
             print(f"警告: GraphRAG 初始化失败，已禁用图检索功能: {e}")
             graph_rag = None
-
-    # 定义联网搜索函数（使用 Tavily）
-    def web_search_func(query: str) -> str:
-        api_key = os.getenv("TAVILY_API_KEY")
-        if not api_key:
-            return "联网搜索未配置：缺少 TAVILY_API_KEY 环境变量。"
-        try:
-            client = TavilyClient(api_key=api_key)
-            response = client.search(query, max_results=3)
-            results = []
-            for result in response.get("results", []):
-                content = result.get("content", "")
-                if content:
-                    results.append(content)
-            return "\n\n".join(results) if results else "未找到相关信息。"
-        except Exception as e:
-            return f"搜索失败: {e}"
 
     # 定义节点函数
     def understand_intent(state: AgentState) -> AgentState:
@@ -272,31 +255,11 @@ def create_workflow():
             tool_name = state["plan"].pop(0)
             print(f"执行工具: {tool_name}")
 
-            # 根据工具名调用实际函数
-            if tool_name == "retrieval_tool":
-                # 从 agent/tools 中导入的检索函数
-                result = retrieval_func(state["messages"][-1]["content"])
-            elif tool_name == "web_search":
-                result = web_search_func(state["messages"][-1]["content"])
-            elif tool_name == "calorie_query":
-                if not settings.zhipuai_api_key:
-                    fields = state.get("grill_context", {}).get("fields", {})
-                    result = (
-                        "当前为离线模式，已确认热量查询参数："
-                        f"食物={fields.get('food', '未说明')}，"
-                        f"份量={fields.get('amount', '100g')}，"
-                        f"口径={fields.get('cooking_state', '未说明')}。"
-                        "配置知识库 API Key 后可返回具体热量数据。"
-                    )
-                else:
-                    result = retrieval_func(state["messages"][-1]["content"])
-            elif tool_name == "meal_planner":
-                fields = state.get("grill_context", {}).get("fields", {})
-                result = f"餐食规划参数已确认：{fields}"
-            elif tool_name == "web_search":
-                result = web_search_func(state["messages"][-1]["content"])
-            else:
-                result = f"未知工具 {tool_name}"
+            result = tool_registry.execute(
+                tool_name,
+                state["messages"][-1]["content"],
+                state.get("grill_context", {}),
+            )
 
             state["tool_outputs"][tool_name] = result
             print(f"工具结果: {result[:200]}...")
@@ -427,20 +390,6 @@ def create_workflow():
             return "generate_answer"
         finally:
             print("<<< 离开 should_continue")
-
-    def web_search_func(query: str) -> str:
-        api_key = os.getenv("TAVILY_API_KEY")
-        if not api_key:
-            return "联网搜索未配置：缺少 TAVILY_API_KEY 环境变量。"
-        try:
-            client = TavilyClient(api_key=api_key)
-            response = client.search(query, max_results=3)
-            results = []
-            for result in response.get("results", []):
-                results.append(result.get("content", ""))
-            return "\n\n".join(results) if results else "未找到相关信息。"
-        except Exception as e:
-            return f"搜索失败: {e}"
 
     # 构建图
     print("开始构建 StateGraph...")
