@@ -4,14 +4,14 @@
 
 ## 1. 记录范围
 
-本阶段围绕“用户信息不足时，Agent 自动追问，直到信息足够再回答”的目标完成了三项工作：
+本阶段围绕“用户信息不足时，Agent 自动追问，直到信息足够再回答”的目标完成了四项工作：
 
 | 阶段 | 实际定位 | Git 提交 | 状态 |
 |---|---|---|---|
 | Grill Engine | 实现信息完整性检查和多轮追问 | `0689322` | 已完成 |
 | P01 | 统一 Web、CLI、旧 Agent、MCP 的 Agent 执行架构 | `9a3b88a` | 已完成 |
 | P02 | 完成配置、依赖、Docker、离线降级和运行验收 | `d232d9c` | 已完成 |
-| P03 | 持久化会话、生产运行加固和安全验收 | `b535778` | 已完成 |
+| P03 | 持久化会话、生产运行加固和安全验收 | `b535778` | 已完成；详见 [P03 实施文档](p03-implementation.md) |
 
 实施时间：2026-10-26。
 
@@ -296,7 +296,7 @@ sendBtn.addEventListener('click', () => sendQuestion());
 P03 将“追问状态只存在进程内存中”的原型能力改造成可重启、可部署的会话服务：
 
 - 新增 `core/persistence.py`，使用 SQLAlchemy 持久化 `conversations` 和 `messages`。
-- 新增 Alembic 配置和初始迁移 `migrations/versions/0001_initial_persistence.py`。
+- 新增 Alembic 配置和初始迁移 `migrations/versions/0001_create_conversations.py`。
 - `ConversationRuntime` 每轮从数据库恢复历史消息、当前目标和 `GrillContext`，回答后保存本轮消息和追问状态。
 - 引入 `conversation_id` 和 `request_id`，支持前端恢复会话和请求级排查；同一请求重复保存具备幂等性。
 - 使用会话级锁保护并发请求，避免同一会话的上下文交叉写入。
