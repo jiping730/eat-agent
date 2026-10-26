@@ -6,6 +6,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flask import Flask, request, jsonify, render_template
 from flask_cors import CORS
+from dotenv import load_dotenv
+
+load_dotenv()
 
 app = Flask(__name__)
 from core.workflow import create_workflow
@@ -37,41 +40,60 @@ def ask():
     try:
         data = request.get_json()
         question = data.get('question', '')
+        if not isinstance(question, str) or not question.strip():
+            return jsonify({'error': 'question 不能为空'}), 400
         user_id = data.get('user_id', str(uuid.uuid4()))
         config = {"configurable": {"thread_id": user_id}}
 
-        # 获取该用户的历史消息（如果有）
-        history = user_histories.get(user_id, [])
-        # 将当前用户问题加入历史
-        history.append({"role": "user", "content": question})
-
-        # 构建初始状态（包含完整历史）
-        initial_state = {
-            "messages": history,
-            "user_id": user_id,
-            "memory_context": [],
-            "current_goal": "",
-            "plan": [],
-            "tool_outputs": {},
-            "reflection": "",
-            "iteration": 0,
-            "followup": False
-        }
+        # MemorySaver 会按 thread_id 保存上一轮 Grill 上下文。第二轮只
+        # 追加一条 user 消息，避免把完整历史再次喂给 operator.add reducer。
+        history = list(user_histories.get(user_id, []))
+        user_message = {"role": "user", "content": question.strip()}
+        if history:
+            initial_state = {"messages": [user_message], "user_id": user_id}
+        else:
+            initial_state = {
+                "messages": [user_message],
+                "user_id": user_id,
+                "memory_context": [],
+                "current_goal": "",
+                "plan": [],
+                "tool_outputs": {},
+                "reflection": "",
+                "iteration": 0,
+                "followup": False,
+                "grill_context": {},
+                "grill_result": {},
+            }
 
         start = time.time()
         final_state = workflow.invoke(initial_state, config=config)
         elapsed = time.time() - start
 
-        # 获取助手回复
-        answer = final_state["messages"][-1]["content"]
-        # 将助手回复也加入历史
-        history.append({"role": "assistant", "content": answer})
+        assistant_messages = [m for m in final_state.get("messages", []) if m.get("role") == "assistant"]
+        answer = assistant_messages[-1]["content"] if assistant_messages else "暂时无法生成回答。"
+        history.extend([user_message, {"role": "assistant", "content": answer}])
         user_histories[user_id] = history
 
-        memory_mgr.add_interaction(question, answer, user_id)
+        grill_result = final_state.get("grill_result", {}) or {}
+        grill_action = grill_result.get("action")
+
+        # 追问本身不是最终知识回答，不写入长期记忆；最终回答才写入。
+        if grill_action not in {"clarify", "fallback", "pending_confirmation"}:
+            memory_mgr.add_interaction(question, answer, user_id)
+
+        response_type = {
+            "clarify": "clarification",
+            "fallback": "clarification",
+            "pending_confirmation": "confirmation",
+        }.get(grill_action, "answer")
 
         return jsonify({
             "answer": answer,
+            "type": response_type,
+            "target_field": grill_result.get("target_field"),
+            "options": grill_result.get("candidates", []),
+            "assumptions": grill_result.get("assumptions", []),
             "response_time": round(elapsed, 2),
             "retrieval_count": len(final_state["tool_outputs"])
         })

@@ -7,6 +7,7 @@ from core.memory import MemoryManager
 from core.graph_rag import GraphRAGEngine
 from utils.llm import get_llm
 from config import settings
+from core.grill_engine import GrillEngine, field_label, get_profile
 
 # 导入工具执行函数
 from agent.tools import retrieval_func
@@ -24,12 +25,15 @@ class AgentState(TypedDict):
     reflection: str                                             # 反思结果
     iteration: int                                              # 当前迭代次数
     followup: bool
+    grill_context: Dict[str, Any]
+    grill_result: Dict[str, Any]
 
 def create_workflow():
     # 初始化组件
     print("正在初始化 MemoryManager...")
     memory_mgr = MemoryManager()
     print("MemoryManager 初始化完成")
+    grill_engine = GrillEngine()
 
     # 尝试初始化 GraphRAG，如果失败则禁用
     graph_rag = None
@@ -64,6 +68,40 @@ def create_workflow():
         print(">>> 进入 understand_intent")
         try:
             last_msg = state["messages"][-1]["content"]
+
+            # 用户正在回答 Grill 的问题时，沿用原任务意图，避免把
+            # “没有忌口”“晚餐”等回答误判成 general/followup。
+            grill_context = state.get("grill_context", {}) or {}
+            if grill_context.get("pending_field") and grill_context.get("intent"):
+                pending_intent = grill_context["intent"]
+                starts_new_calorie_query = pending_intent == "meal_planner" and any(
+                    word in last_msg for word in ["热量", "卡路里", "多少卡"]
+                )
+                starts_new_meal_plan = pending_intent == "calorie_query" and any(
+                    word in last_msg for word in ["安排", "推荐", "搭配", "食谱", "餐食"]
+                )
+                if starts_new_calorie_query:
+                    state["current_goal"] = "calorie_query"
+                    return state
+                elif starts_new_meal_plan:
+                    state["current_goal"] = "meal_planner"
+                    return state
+                else:
+                    state["current_goal"] = pending_intent
+                    print(f"沿用 Grill 意图: {state['current_goal']}")
+                    return state
+
+            # 常见营养场景先走确定性识别，只有无法判断时才调用 LLM。
+            if any(word in last_msg for word in ["热量", "卡路里", "多少卡"]):
+                state["current_goal"] = "calorie_query"
+                return state
+            if any(word in last_msg for word in ["搜索", "查一下", "最新", "网上", "新闻"]):
+                state["current_goal"] = "web_search"
+                return state
+            if any(word in last_msg for word in ["吃", "餐", "菜", "搭配", "食谱", "餐食"]):
+                state["current_goal"] = "meal_planner"
+                return state
+
             context_messages = state["messages"][-3:]
             context_str = "\n".join(
                 [f"{'用户' if m['role'] == 'user' else '助手'}: {m['content']}" for m in context_messages]
@@ -128,6 +166,43 @@ def create_workflow():
         print("<<< 离开 retrieve_memory")
         return state
 
+    def grill_check(state: AgentState) -> AgentState:
+        """阻止信息不足的任务进入工具执行阶段。"""
+        print(">>> 进入 grill_check")
+        try:
+            intent = state.get("current_goal", "general")
+            profile = get_profile(intent)
+            if profile is None:
+                state["grill_result"] = {"action": "execute"}
+                return state
+
+            result = grill_engine.process(
+                profile,
+                state["messages"][-1]["content"],
+                state.get("grill_context", {}),
+                current_intent=intent,
+            )
+            state["grill_context"] = result.context.model_dump(mode="json")
+            state["grill_result"] = result.to_dict()
+            if result.action in {"clarify", "fallback", "pending_confirmation"}:
+                state["plan"] = []
+                state["followup"] = True
+            print(f"Grill 结果: {result.action}, 字段: {result.context.fields}")
+        except Exception as exc:
+            # Grill 失败不能阻断原有问答链路；记录错误并放行。
+            print(f"❌ grill_check 异常，放行原流程: {exc}")
+            traceback.print_exc()
+            state["grill_result"] = {"action": "execute", "error": str(exc)}
+        print("<<< 离开 grill_check")
+        return state
+
+    def respond_grill(state: AgentState) -> AgentState:
+        """把结构化 Grill 结果转成当前对话的一条 assistant 消息。"""
+        result = state.get("grill_result", {})
+        message = result.get("message") or result.get("question") or "请补充更多信息。"
+        state["messages"].append({"role": "assistant", "content": message})
+        return state
+
     def plan_actions(state: AgentState) -> AgentState:
         print(">>> 进入 plan_actions")
         try:
@@ -136,6 +211,15 @@ def create_workflow():
             last_assistant_msg = ""
             if len(state["messages"]) >= 2 and state["messages"][-2]["role"] == "assistant":
                 last_assistant_msg = state["messages"][-2]["content"]
+
+            grill_action = state.get("grill_result", {}).get("action")
+
+            # Grill 已判定信息足够时优先执行，不能被“没有/晚餐”等回答
+            # 关键词再次误判为普通 followup。
+            if grill_action == "execute" and goal in ["calorie_query", "meal_planner"]:
+                state["plan"] = [goal]
+                state["followup"] = False
+                return state
 
             # 追问关键词列表（与之前一致）
             followup_keywords = [
@@ -195,10 +279,20 @@ def create_workflow():
             elif tool_name == "web_search":
                 result = web_search_func(state["messages"][-1]["content"])
             elif tool_name == "calorie_query":
-                # 若你已有热量查询工具，可在此调用
-                result = f"热量查询工具未实现，输入：{state['messages'][-1]['content']}"
+                if not settings.zhipuai_api_key:
+                    fields = state.get("grill_context", {}).get("fields", {})
+                    result = (
+                        "当前为离线模式，已确认热量查询参数："
+                        f"食物={fields.get('food', '未说明')}，"
+                        f"份量={fields.get('amount', '100g')}，"
+                        f"口径={fields.get('cooking_state', '未说明')}。"
+                        "配置知识库 API Key 后可返回具体热量数据。"
+                    )
+                else:
+                    result = retrieval_func(state["messages"][-1]["content"])
             elif tool_name == "meal_planner":
-                result = f"餐食规划工具未实现，输入：{state['messages'][-1]['content']}"
+                fields = state.get("grill_context", {}).get("fields", {})
+                result = f"餐食规划参数已确认：{fields}"
             elif tool_name == "web_search":
                 result = web_search_func(state["messages"][-1]["content"])
             else:
@@ -268,6 +362,7 @@ def create_workflow():
             context = {
                 "memory": state["memory_context"],
                 "tool_outputs": state["tool_outputs"],
+                "grill_context": state.get("grill_context", {}),
                 "graph_rag": graph_rag.search(current_question) if graph_rag else None
             }
             prompt = f"""请根据以下对话历史和相关上下文回答用户当前问题。
@@ -279,8 +374,28 @@ def create_workflow():
 
 上下文信息：{context}"""
 
-        llm = get_llm()
-        answer = llm.invoke(prompt)
+        try:
+            llm = get_llm()
+            answer = llm.invoke(prompt)
+        except Exception as exc:
+            print(f"⚠️ LLM 回答失败，使用本地兜底: {exc}")
+            grill_fields = state.get("grill_context", {}).get("fields", {})
+            if state.get("current_goal") == "meal_planner":
+                profile = get_profile("meal_planner")
+
+                def display_field(name: str, fallback: str) -> str:
+                    value = grill_fields.get(name, fallback)
+                    field = next((item for item in profile.fields if item.name == name), None) if profile else None
+                    return field_label(field, value) if field else str(value)
+
+                answer = (
+                    f"我按{display_field('meal_type', '当前餐次')}、"
+                    f"{display_field('health_goal', '均衡饮食')}、"
+                    f"{display_field('allergy_info', '未说明忌口')}为你安排。"
+                    "建议选择一份优质蛋白、两份蔬菜和适量主食；如果你愿意，我还可以继续细化菜品和克重。"
+                )
+            else:
+                answer = state.get("tool_outputs", {}).get("calorie_query", "暂时无法获取知识库结果，请稍后重试。")
         state["messages"].append({"role": "assistant", "content": answer})
         return state
 
@@ -333,6 +448,8 @@ def create_workflow():
 
     workflow.add_node("understand", understand_intent)
     workflow.add_node("retrieve_memory", retrieve_memory)
+    workflow.add_node("grill_check", grill_check)
+    workflow.add_node("respond_grill", respond_grill)
     workflow.add_node("plan_actions", plan_actions)
     workflow.add_node("execute_tool", execute_tool)
     workflow.add_node("generate_answer", generate_answer)
@@ -340,7 +457,12 @@ def create_workflow():
 
     workflow.set_entry_point("understand")
     workflow.add_edge("understand", "retrieve_memory")
-    workflow.add_edge("retrieve_memory", "plan_actions")
+    workflow.add_edge("retrieve_memory", "grill_check")
+    workflow.add_conditional_edges(
+        "grill_check",
+        lambda state: "respond_grill" if state.get("grill_result", {}).get("action") in {"clarify", "fallback", "pending_confirmation"} else "plan_actions",
+    )
+    workflow.add_edge("respond_grill", END)
     workflow.add_conditional_edges("plan_actions", should_continue)
     workflow.add_conditional_edges("execute_tool", should_continue)
     workflow.add_edge("generate_answer", "reflect")

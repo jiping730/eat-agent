@@ -115,6 +115,46 @@ body {
     text-align: right;
 }
 
+.response-status {
+    align-self: flex-start;
+    font-size: 0.76rem;
+    margin-top: 6px;
+    color: #2b9348;
+}
+
+.response-status.clarification {
+    color: #bc6c25;
+}
+
+.clarification-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.option-button {
+    border: 1px solid #8bcf9b;
+    border-radius: 18px;
+    background: #f1fbf3;
+    color: #1e7b3a;
+    cursor: pointer;
+    padding: 7px 13px;
+    font-size: 0.9rem;
+    transition: background 0.2s, border-color 0.2s, transform 0.2s;
+}
+
+.option-button:hover {
+    background: #d4edda;
+    border-color: #2b9348;
+    transform: translateY(-1px);
+}
+
+.option-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
 .chat-input-area {
     display: flex;
     padding: 16px 20px;

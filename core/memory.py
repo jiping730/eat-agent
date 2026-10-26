@@ -11,10 +11,18 @@ class MemoryManager:
         self.short_term = []
         # 长期记忆向量库路径
         self.long_term_path = os.path.join(settings.memory_path, "long_term")
-        self.long_term = self._load_long_term()
+        self.long_term = None
+        try:
+            self.long_term = self._load_long_term()
+        except Exception as exc:
+            # 记忆是增强能力，不能阻断主问答链路；没有 embedding 配置时使用短期记忆模式。
+            print(f"警告: 长期向量记忆不可用，已降级为短期记忆: {exc}")
         # 元记忆文件
         self.meta_file = os.path.join(settings.memory_path, "meta.json")
-        self._ensure_dir()
+        try:
+            self._ensure_dir()
+        except OSError as exc:
+            print(f"警告: 元记忆目录不可写，将跳过持久化: {exc}")
 
     def _ensure_dir(self):
         """确保记忆目录存在"""
@@ -35,6 +43,8 @@ class MemoryManager:
 
     def save_long_term(self):
         """持久化长期记忆"""
+        if self.long_term is None:
+            return
         os.makedirs(os.path.dirname(self.long_term_path), exist_ok=True)
         self.long_term.save_local(self.long_term_path)
 
@@ -51,8 +61,12 @@ class MemoryManager:
 
         # 长期记忆
         summary = f"用户问：{user_input} 助手答：{agent_output}"
-        self.long_term.add_texts([summary], metadatas=[{"type": "interaction", "user_id": user_id}])
-        self.save_long_term()
+        if self.long_term is not None:
+            try:
+                self.long_term.add_texts([summary], metadatas=[{"type": "interaction", "user_id": user_id}])
+                self.save_long_term()
+            except Exception as exc:
+                print(f"警告: 长期记忆写入失败，保留短期记忆: {exc}")
 
     def retrieve_relevant_memories(self, query: str, user_id: Optional[str] = None, k: int = 5) -> List[str]:
         memories = []
@@ -61,9 +75,13 @@ class MemoryManager:
             if any(word in mem["input"] for word in query.split()):
                 memories.append(f"近期对话：{mem['input']} → {mem['output']}")
         # 长期记忆检索
-        docs = self.long_term.similarity_search(query, k=k)
-        for doc in docs:
-            memories.append(f"历史记忆：{doc.page_content}")
+        if self.long_term is not None:
+            try:
+                docs = self.long_term.similarity_search(query, k=k)
+                for doc in docs:
+                    memories.append(f"历史记忆：{doc.page_content}")
+            except Exception as exc:
+                print(f"警告: 长期记忆检索失败: {exc}")
         return memories[:k]
 
     def save_meta(self, user_input: str, agent_output: str, quality: float):
@@ -81,8 +99,11 @@ class MemoryManager:
         })
         # 保留最近 100 条
         meta = meta[-100:]
-        with open(self.meta_file, "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2, ensure_ascii=False)
+        try:
+            with open(self.meta_file, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2, ensure_ascii=False)
+        except OSError as exc:
+            print(f"警告: 元记忆写入失败，跳过持久化: {exc}")
 
     def get_meta_stats(self):
         try:

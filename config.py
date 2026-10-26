@@ -9,7 +9,8 @@ load_dotenv()
 
 class Settings(BaseSettings):
     # 基础配置
-    zhipuai_api_key: str = os.getenv("ZHIPUAI_API_KEY")
+    # API Key 由部署环境注入；本地开发和离线测试允许为空，调用层会走兜底逻辑。
+    zhipuai_api_key: Optional[str] = os.getenv("ZHIPUAI_API_KEY")
     embedding_model: str = "embedding-2"
     llm_model: str = "glm-4-flash"
 
