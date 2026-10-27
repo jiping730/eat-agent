@@ -10,7 +10,7 @@ from config import settings
 try:
     import redis
 except ImportError:  # pragma: no cover - production dependencies include redis
-    redis = None
+    redis = None  # type: ignore[assignment]
 
 
 class RedisCoordinator:

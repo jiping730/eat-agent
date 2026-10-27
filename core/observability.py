@@ -12,7 +12,6 @@ import contextlib
 import contextvars
 import logging
 import sys
-import time
 from dataclasses import dataclass, replace
 from typing import Any, Iterator, Mapping
 from uuid import uuid4

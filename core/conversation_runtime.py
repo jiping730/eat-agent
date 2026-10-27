@@ -196,7 +196,7 @@ class ConversationRuntime:
         answer = assistant_messages[-1]["content"] if assistant_messages else "暂时无法生成回答。"
 
         grill_result = final_state.get("grill_result", {}) or {}
-        grill_action = grill_result.get("action")
+        grill_action = str(grill_result.get("action") or "")
         intent = final_state.get("current_goal") or grill_result.get("task")
         record_grill_decision(
             grill_action or "unknown",

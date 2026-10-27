@@ -24,7 +24,63 @@ jobs:
       - name: Check whitespace
         run: git diff --check
       - name: Run tests
-        run: pytest -q
+        env:
+          DATABASE_URL: sqlite:////tmp/eat-agent-ci.db
+          AUTO_CREATE_SCHEMA: "true"
+          REDIS_URL: ""
+        run: pytest -q -m "not e2e" --cov=core.grill_engine --cov=core.intent_router --cov=core.workflow --cov=core.conversation_runtime --cov-report=term-missing --cov-report=xml --cov-fail-under=80
+
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install project and development dependencies
+        run: python -m pip install ".[dev]"
+      - name: Ruff
+        run: ruff check core front agent rag mcp_servers utils --exclude '*.pyc'
+      - name: Black
+        run: black --check core/intent_router.py core/workflow.py core/conversation_runtime.py
+      - name: isort
+        run: isort --check-only core/intent_router.py core/conversation_runtime.py
+      - name: Mypy
+        run: mypy core/intent_router.py core/grill_engine.py core/conversation_runtime.py
+
+  browser-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install project and browser test dependencies
+        run: python -m pip install ".[dev,e2e]"
+      - name: Install Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Start local application
+        env:
+          DATABASE_URL: sqlite:////tmp/eat-agent-e2e.db
+          AUTO_CREATE_SCHEMA: "true"
+          REDIS_URL: ""
+          APP_ENV: development
+        run: |
+          nohup uvicorn front.app:app --host 127.0.0.1 --port 5000 >/tmp/eat-agent-e2e.log 2>&1 &
+          for attempt in $(seq 1 30); do
+            curl --fail --silent http://127.0.0.1:5000/healthz && break
+            sleep 1
+          done
+      - name: Run browser E2E
+        env:
+          RUN_BROWSER_E2E: "1"
+          E2E_BASE_URL: http://127.0.0.1:5000
+          DATABASE_URL: sqlite:////tmp/eat-agent-e2e.db
+          AUTO_CREATE_SCHEMA: "true"
+          REDIS_URL: ""
+        run: pytest -q -m e2e test_browser_e2e.py
 
   helm:
     runs-on: ubuntu-latest
@@ -33,6 +89,7 @@ jobs:
       - name: Lint and render Helm chart
         run: |
           docker run --rm \
+            --entrypoint sh \
             -v "$PWD:/work" \
             -w /work \
             alpine/helm:3.17.0 \
@@ -40,7 +97,7 @@ jobs:
 
   image:
     runs-on: ubuntu-latest
-    needs: [test, helm]
+    needs: [test, quality, browser-e2e, helm]
     steps:
       - uses: actions/checkout@v4
       - name: Build immutable CI image

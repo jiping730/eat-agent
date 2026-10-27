@@ -132,7 +132,9 @@ def classify_request(
             confidence=0.98,
         )
 
-    domain = "nutrition" if _contains(normalized, _NUTRITION_MARKERS) or _contains(normalized, _MEAL_MARKERS) else "general"
+    domain = (
+        "nutrition" if _contains(normalized, _NUTRITION_MARKERS) or _contains(normalized, _MEAL_MARKERS) else "general"
+    )
     goal = _goal_for(normalized, domain)
 
     # A calculation is more specific than a generic calorie lookup.
@@ -174,7 +176,9 @@ def classify_request(
 
     # Planning verbs are intentionally checked before broad advice words.
     if _contains(normalized, _PLAN_MARKERS) or (
-        domain == "nutrition" and _contains(normalized, _MEAL_MARKERS) and _contains(normalized, ("帮我", "我要", "给我"))
+        domain == "nutrition"
+        and _contains(normalized, _MEAL_MARKERS)
+        and _contains(normalized, ("帮我", "我要", "给我"))
     ):
         return RequestIntent(
             domain=domain,
@@ -187,8 +191,7 @@ def classify_request(
         )
 
     if _contains(normalized, _ADVICE_MARKERS) or (
-        _contains(normalized, ("想", "希望", "我要", "我想", "想要"))
-        and not _contains(normalized, _MEAL_MARKERS)
+        _contains(normalized, ("想", "希望", "我要", "我想", "想要")) and not _contains(normalized, _MEAL_MARKERS)
     ):
         return RequestIntent(
             domain=domain,
@@ -203,7 +206,9 @@ def classify_request(
     if has_pending:
         return RequestIntent(
             domain=previous_domain,
-            operation=previous_operation if previous_operation in {"plan", "lookup", "calculate", "execute"} else "plan",
+            operation=(
+                previous_operation if previous_operation in {"plan", "lookup", "calculate", "execute"} else "plan"
+            ),
             task=previous_task,
             goal=goal or previous.get("goal"),
             slots=_slots_for(normalized),

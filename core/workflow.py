@@ -11,18 +11,19 @@ from core.grill_engine import GrillContext, GrillEngine, field_label, get_profil
 from core.intent_router import classify_request
 from core.tool_registry import ToolRegistry, ToolResult, build_default_tool_registry, tool_error_message
 
+
 # 定义状态
 class AgentState(TypedDict):
-    messages: Annotated[List[Dict[str, str]], operator.add]   # 对话历史
-    user_id: str                                               # 用户标识
-    memory_context: List[str]                                  # 记忆检索结果
-    current_goal: str                                          # 当前目标
-    current_operation: str                                     # 当前操作模式
-    request_intent: Dict[str, Any]                              # 结构化请求意图
-    plan: List[str]                                            # 执行计划
-    tool_outputs: Dict[str, Any]                               # 工具输出缓存
-    reflection: str                                             # 反思结果
-    iteration: int                                              # 当前迭代次数
+    messages: Annotated[List[Dict[str, str]], operator.add]  # 对话历史
+    user_id: str  # 用户标识
+    memory_context: List[str]  # 记忆检索结果
+    current_goal: str  # 当前目标
+    current_operation: str  # 当前操作模式
+    request_intent: Dict[str, Any]  # 结构化请求意图
+    plan: List[str]  # 执行计划
+    tool_outputs: Dict[str, Any]  # 工具输出缓存
+    reflection: str  # 反思结果
+    iteration: int  # 当前迭代次数
     followup: bool
     grill_context: Dict[str, Any]
     grill_result: Dict[str, Any]
@@ -32,6 +33,7 @@ class AgentState(TypedDict):
     conversation_id: str
     trace_id: str
     tool_failures: List[Dict[str, Any]]
+
 
 def create_workflow(
     memory_mgr: MemoryManager | None = None,
@@ -210,15 +212,81 @@ def create_workflow(
 
             # 追问关键词列表（与之前一致）
             followup_keywords = [
-                "这个", "那个", "这些", "那些", "它", "它们", "这", "那",
-                "中午", "晚上", "早餐", "午餐", "晚餐", "明天", "后天", "今天", "昨天", "一会", "等会",
-                "搭配", "推荐", "帮我", "给我", "要", "想", "来", "换", "改", "做", "弄",
-                "再", "还", "也", "又", "继续", "另外", "还有", "除此之外",
-                "呢", "吗", "吧", "嘛", "呀", "啊", "怎么样", "如何", "什么", "啥", "怎么",
-                "别的", "其他", "另", "类似", "同样", "一样",
-                "一点", "一些", "稍微", "多", "少", "更", "最",
-                "不", "没", "不是", "不要", "别",
-                "两种", "两个", "都", "一起", "同时", "各", "分别", "混合"
+                "这个",
+                "那个",
+                "这些",
+                "那些",
+                "它",
+                "它们",
+                "这",
+                "那",
+                "中午",
+                "晚上",
+                "早餐",
+                "午餐",
+                "晚餐",
+                "明天",
+                "后天",
+                "今天",
+                "昨天",
+                "一会",
+                "等会",
+                "搭配",
+                "推荐",
+                "帮我",
+                "给我",
+                "要",
+                "想",
+                "来",
+                "换",
+                "改",
+                "做",
+                "弄",
+                "再",
+                "还",
+                "也",
+                "又",
+                "继续",
+                "另外",
+                "还有",
+                "除此之外",
+                "呢",
+                "吗",
+                "吧",
+                "嘛",
+                "呀",
+                "啊",
+                "怎么样",
+                "如何",
+                "什么",
+                "啥",
+                "怎么",
+                "别的",
+                "其他",
+                "另",
+                "类似",
+                "同样",
+                "一样",
+                "一点",
+                "一些",
+                "稍微",
+                "多",
+                "少",
+                "更",
+                "最",
+                "不",
+                "没",
+                "不是",
+                "不要",
+                "别",
+                "两种",
+                "两个",
+                "都",
+                "一起",
+                "同时",
+                "各",
+                "分别",
+                "混合",
             ]
             is_followup = any(word in current_user_msg for word in followup_keywords) and last_assistant_msg
 
@@ -239,7 +307,13 @@ def create_workflow(
             else:
                 state["plan"] = []
                 state["followup"] = False
-            log_event(logger, 20, "workflow_plan_created", plan_size=len(state["plan"]), followup=state.get("followup", False))
+            log_event(
+                logger,
+                20,
+                "workflow_plan_created",
+                plan_size=len(state["plan"]),
+                followup=state.get("followup", False),
+            )
         except Exception as e:
             log_event(logger, 40, "workflow_plan_failed", error_type=type(e).__name__)
             state["plan"] = []
@@ -355,7 +429,7 @@ def create_workflow(
                 "tool_outputs": state["tool_outputs"],
                 "grill_context": state.get("grill_context", {}),
                 "request_intent": request_intent,
-                "graph_rag": graph_rag.search(current_question) if graph_rag else None
+                "graph_rag": graph_rag.search(current_question) if graph_rag else None,
             }
             prompt = f"""请根据以下对话历史和相关上下文回答用户当前问题。
 
@@ -447,7 +521,12 @@ def create_workflow(
     workflow.add_edge("retrieve_memory", "grill_check")
     workflow.add_conditional_edges(
         "grill_check",
-        lambda state: "respond_grill" if state.get("grill_result", {}).get("action") in {"clarify", "fallback", "pending_confirmation", "reject", "switch", "multi_task"} else "plan_actions",
+        lambda state: (
+            "respond_grill"
+            if state.get("grill_result", {}).get("action")
+            in {"clarify", "fallback", "pending_confirmation", "reject", "switch", "multi_task"}
+            else "plan_actions"
+        ),
     )
     workflow.add_edge("respond_grill", END)
     workflow.add_conditional_edges("plan_actions", should_continue)

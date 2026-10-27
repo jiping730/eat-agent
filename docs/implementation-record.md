@@ -559,9 +559,21 @@ Alembic：0001 → 0002 → 0003 成功执行
 - 不新增 Agent 框架、任务队列或工具微服务。
 - 不实现跨 Pod 共享熔断状态、在线工具市场和租户级工具策略；这些能力留到后续规模化阶段。
 
-## 12. 当前已知边界
+## 12. P0-8：测试与 CI 实施记录
 
-本记录只记录已经实际完成的 Grill Engine、P01、P02、P03、P04 和 P05，不把后续计划写成已完成能力。
+P0-8 严格按照 [项目实施主线](implementation-roadmap.md) 中的“测试和 CI”执行，目标是让小型平台的核心能力具备自动回归、安全专项、并发专项和浏览器闭环验收能力。
+
+- `pyproject.toml` 增加 pytest 标记、核心路由覆盖率配置、80% 覆盖率门槛和 Ruff 配置，`uv.lock` 纳入质量工具和浏览器 E2E 依赖。
+- 新增 `test_p08_quality.py`，覆盖 Prompt Injection、Grill 门禁、限流隔离和并发幂等。
+- 新增 `test_browser_e2e.py`，覆盖目标建议、明确餐单规划、补充忌口和刷新恢复。
+- `.github/workflows/ci.yml` 增加覆盖率、Ruff、Black、isort、Mypy、Playwright Chromium、Helm 和镜像扫描门禁。
+- P0-8 验收：全量非浏览器测试 `103 passed, 1 skipped`，核心四个模块分支覆盖率 `80.50%`；Ruff、Black、isort、Mypy、Helm 和浏览器 E2E 均通过，其中浏览器 E2E 为 `1 passed`。
+
+本阶段仍不实现 CD 发布、镜像签名、生产制品仓库、多租户、OIDC/企业 SSO 和跨 Pod 共享熔断。
+
+## 13. 当前已知边界
+
+本记录只记录已经实际完成的 Grill Engine、P01、P02、P03、P04、P05 和 P0-8，不把后续计划写成已完成能力。
 
 当前仍有以下边界：
 

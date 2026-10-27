@@ -6,6 +6,7 @@ import time
 from collections.abc import Mapping
 from typing import Any, List, Optional
 
+from langchain_core.callbacks.manager import CallbackManagerForLLMRun
 from langchain.llms.base import LLM
 from zhipuai import ZhipuAI
 
@@ -55,9 +56,15 @@ class CustomZhipuChat(LLM):
     def _llm_type(self) -> str:
         return "zhipuai"
 
-    def _call(self, prompt: str, stop: Optional[List[str]] = None, **kwargs) -> str:
+    def _call(
+        self,
+        prompt: str,
+        stop: Optional[List[str]] = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> str:
         started_at = time.perf_counter()
-        model = str(self.model)
+        model = str(self.model)  # type: ignore[attr-defined]
         if not settings.zhipuai_api_key:
             elapsed = time.perf_counter() - started_at
             record_llm_call("fallback", elapsed, model=model)
@@ -72,10 +79,10 @@ class CustomZhipuChat(LLM):
                     "llm.prompt_length": len(prompt),
                 },
             ):
-                response = self.client.chat.completions.create(
-                    model=self.model,
+                response = self.client.chat.completions.create(  # type: ignore[attr-defined]
+                    model=self.model,  # type: ignore[attr-defined]
                     messages=[{"role": "user", "content": prompt}],
-                    temperature=self.temperature,
+                    temperature=self.temperature,  # type: ignore[attr-defined]
                     timeout=30.0,
                 )
 

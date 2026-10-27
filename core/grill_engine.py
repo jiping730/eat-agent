@@ -571,9 +571,9 @@ class GrillEngine:
         dependency_issues = self._dependency_issues(profile, ctx)
         if dependency_issues:
             ctx.validation_errors.extend(dependency_issues)
-            field = profile.field(dependency_issues[0].field)
-            if field:
-                return self._clarify(profile, ctx, field, reason="dependency", issues=ctx.validation_errors)
+            dependency_field = profile.field(dependency_issues[0].field)
+            if dependency_field:
+                return self._clarify(profile, ctx, dependency_field, reason="dependency", issues=ctx.validation_errors)
 
         assumptions: list[str] = []
         for field in profile.fields:
