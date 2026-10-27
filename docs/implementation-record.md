@@ -4,7 +4,7 @@
 
 ## 1. 记录范围
 
-本阶段围绕“用户信息不足时，Agent 自动追问，直到信息足够再回答”的目标完成了四项工作：
+本文围绕“用户信息不足时，Agent 自动追问，直到信息足够再回答”的目标，记录从 Grill Engine 到 P05 的实际实现结果：
 
 | 阶段 | 实际定位 | Git 提交 | 状态 |
 |---|---|---|---|
@@ -12,7 +12,8 @@
 | P01 | 统一 Web、CLI、旧 Agent、MCP 的 Agent 执行架构 | `9a3b88a` | 已完成 |
 | P02 | 完成配置、依赖、Docker、离线降级和运行验收 | `d232d9c` | 已完成 |
 | P03 | 持久化会话、生产运行加固和安全验收 | `b535778` | 已完成；详见 [P03 实施文档](p03-implementation.md) |
-| P04 | 小型平台、JWT、Redis 和 Kubernetes 部署层 | 待提交 | 已完成；详见 [P04 实施文档](p04-implementation.md) |
+| P04 | 小型平台、JWT、Redis 和 Kubernetes 部署层 | `87715ca` | 已完成；详见 [P04 实施文档](p04-implementation.md) |
+| P05 | 可观测性、CI、安全加固、备份恢复和交付验收 | 本次交付提交 | 已完成；详见 [P05 实施文档](p05-implementation.md) |
 
 实施时间：2026-10-26。
 
@@ -404,15 +405,38 @@ P04 在 P03 的持久化基础上完成了小型平台能力，实际改动、�
 - 最终镜像全量测试为 `20 passed in 4.95s`，真实浏览器完成三轮追问和最终回答验收。
 - 本机 Kubernetes 集群未启用，因此只完成 Helm lint/render，未宣称真实集群部署已验收。
 
-## 8. 当前已知边界
+## 8. P05：企业级运行保障与交付验收
 
-本记录只记录已经实际完成的 Grill Engine、P01、P02、P03 和 P04，不把后续计划写成已完成能力。
+P05 的完整实际记录见 [P05 实施文档](p05-implementation.md)。本阶段已经落地：
+
+- Prometheus HTTP、会话、Grill、LLM 和限流指标，以及 `/metrics` 访问保护；
+- 结构化日志脱敏、用户标识指纹化和敏感错误收敛；
+- 生产严格安全配置校验，避免弱 JWT、通配 CORS、SQLite 或无 Redis 配置进入生产；
+- 非 root 容器、只读根文件系统、capabilities drop、seccomp 和临时卷等 Helm 安全默认值；
+- PostgreSQL custom-format 备份与显式确认恢复脚本；
+- Grill 评测样例、P05 运行安全测试和 GitHub Actions CI；
+- 最终 `eat-agent:p05` 镜像、Compose 健康检查、真实浏览器多轮追问和数据库恢复演练。
+
+P05 实际验收结果：
+
+```text
+最终镜像全量测试：27 passed
+浏览器：信息不足 → 两轮追问 → 已完成回答
+PostgreSQL：custom-format backup/restore 成功
+Helm：lint/render 成功
+Kubernetes：本机未启用，仅完成静态验收
+```
+
+## 9. 当前已知边界
+
+本记录只记录已经实际完成的 Grill Engine、P01、P02、P03、P04 和 P05，不把后续计划写成已完成能力。
 
 当前仍有以下边界：
 
-- JWT 用户认证、Refresh Token 轮换和 Redis 共享协调已在 P04 落地；完整 RBAC、审计和企业 SSO 仍未接入。
-- Kubernetes 真实集群、Ingress Controller、Metrics Server 和生产级 Redis/PostgreSQL 高可用尚未在本机验收。
-- 还没有完整的 CI/CD、指标监控、告警和分布式链路追踪。
-- PostgreSQL 备份、恢复演练、TLS 和更细粒度的数据访问策略仍需按生产环境补齐。
+- JWT 用户认证、Refresh Token 轮换和 Redis 共享协调已在 P04 落地；完整 RBAC、企业 SSO/OIDC 和更完整审计留存仍未接入。
+- CI 已增加自动检查，但 CD 发布、镜像签名、制品仓库和自动回滚仍需接入实际发布平台。
+- Kubernetes 真实集群、Ingress Controller、Metrics Server、Prometheus Operator 和生产级 Redis/PostgreSQL 高可用尚未在本机验收。
+- PostgreSQL 备份工具和恢复演练已完成；定时任务、对象存储、保留策略和生产级恢复演练仍需结合环境落地。
+- TLS、告警、分布式链路追踪和更细粒度的数据访问策略仍需按生产环境补齐。
 - 未配置模型 Key 时只能使用离线降级能力，不能获得完整的模型生成答案。
 

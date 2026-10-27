@@ -11,6 +11,7 @@ from typing import Any
 
 from config import settings
 from core.memory import MemoryManager
+from core.observability import record_conversation, record_grill_decision
 from core.persistence import ConversationStore
 from core.redis_support import RedisCoordinator
 from core.tool_registry import build_default_tool_registry
@@ -145,6 +146,7 @@ class ConversationRuntime:
 
         grill_result = final_state.get("grill_result", {}) or {}
         grill_action = grill_result.get("action")
+        record_grill_decision(grill_action or "unknown", grill_result.get("target_field"))
         if grill_action not in {"clarify", "fallback", "pending_confirmation"}:
             self.memory_mgr.add_interaction(question, answer, user_id)
 
@@ -180,5 +182,7 @@ class ConversationRuntime:
             target_field=target_field,
             response_payload=response.to_dict(),
         )
+
+        record_conversation(response_type, grill_action or "none", elapsed)
 
         return response

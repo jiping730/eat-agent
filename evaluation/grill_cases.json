@@ -1,0 +1,25 @@
+[
+  {
+    "name": "meal_planner_asks_meal_type",
+    "question": "我想增肌",
+    "expected_action": "clarify",
+    "expected_field": "meal_type"
+  },
+  {
+    "name": "meal_planner_asks_allergy",
+    "question": "晚餐",
+    "context": {"intent": "meal_planner", "fields": {"health_goal": "muscle_gain"}},
+    "expected_action": "clarify",
+    "expected_field": "allergy_info"
+  },
+  {
+    "name": "meal_planner_executes_when_complete",
+    "question": "晚餐，没有过敏或忌口",
+    "context": {
+      "intent": "meal_planner",
+      "fields": {"health_goal": "muscle_gain", "meal_type": "dinner"}
+    },
+    "expected_action": "execute",
+    "expected_field": null
+  }
+]

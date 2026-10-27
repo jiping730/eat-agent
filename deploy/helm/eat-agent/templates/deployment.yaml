@@ -23,6 +23,13 @@ spec:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
       terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       serviceAccountName: {{ include "eat-agent.serviceAccountName" . }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
@@ -36,6 +43,16 @@ spec:
             - name: http
               containerPort: 5000
               protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: app-data
+              mountPath: /app/data
+            - name: tmp
+              mountPath: /tmp
           envFrom:
             - configMapRef:
                 name: {{ include "eat-agent.fullname" . }}-config
@@ -50,6 +67,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "eat-agent.secretName" . }}
                   key: JWT_SECRET
+            - name: METRICS_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "eat-agent.secretName" . }}
+                  key: METRICS_API_KEY
             - name: ZHIPUAI_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -90,6 +112,11 @@ spec:
                 command: ["/bin/sh", "-c", "sleep 5"]
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: app-data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

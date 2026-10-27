@@ -18,5 +18,7 @@ data:
   LLM_MODEL: {{ .Values.config.llmModel | quote }}
   EMBEDDING_MODEL: {{ .Values.config.embeddingModel | quote }}
   AUTO_CREATE_SCHEMA: {{ .Values.config.autoCreateSchema | quote }}
+  STRICT_SECURITY: {{ .Values.config.strictSecurity | quote }}
+  METRICS_ENABLED: {{ .Values.config.metricsEnabled | quote }}
   REDIS_URL: {{ include "eat-agent.redisUrl" . | quote }}
   REDIS_LOCK_TIMEOUT_SECONDS: "30"

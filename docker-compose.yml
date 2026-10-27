@@ -25,7 +25,7 @@ services:
       retries: 12
 
   eat-agent:
-    image: eat-agent:p04
+    image: eat-agent:p05
     build: .
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://eat_agent:eat_agent@postgres:5432/eat_agent}
@@ -34,8 +34,8 @@ services:
       LLM_MODEL: ${LLM_MODEL:-glm-4-flash}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embedding-2}
       AUTO_CREATE_SCHEMA: ${AUTO_CREATE_SCHEMA:-false}
-      APP_ENV: ${APP_ENV:-production}
-      APP_VERSION: ${APP_VERSION:-0.4.0}
+      APP_ENV: ${APP_ENV:-development}
+      APP_VERSION: ${APP_VERSION:-0.5.0}
       APP_API_KEY: ${APP_API_KEY:-}
       AUTH_MODE: ${AUTH_MODE:-auto}
       JWT_SECRET: ${JWT_SECRET:-}
@@ -44,6 +44,9 @@ services:
       JWT_REFRESH_TTL_DAYS: ${JWT_REFRESH_TTL_DAYS:-30}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       REDIS_LOCK_TIMEOUT_SECONDS: ${REDIS_LOCK_TIMEOUT_SECONDS:-30}
+      STRICT_SECURITY: ${STRICT_SECURITY:-false}
+      METRICS_ENABLED: ${METRICS_ENABLED:-true}
+      METRICS_API_KEY: ${METRICS_API_KEY:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-65536}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}

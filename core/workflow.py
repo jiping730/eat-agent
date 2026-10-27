@@ -116,7 +116,6 @@ def create_workflow(
             else:
                 state["current_goal"] = "general"
 
-            print(f"用户输入: {last_msg}")
             print(f"当前目标: {state['current_goal']}")
         except Exception as e:
             print(f"❌ understand_intent 异常: {e}")
@@ -141,7 +140,7 @@ def create_workflow(
                 state["memory_context"] = []
             else:
                 query = state["messages"][-1]["content"]
-                print(f"检索记忆，查询: {query}")
+                print("检索记忆，已执行")
                 memories = memory_mgr.retrieve_relevant_memories(query, user_id=state["user_id"])
                 print(f"检索到 {len(memories)} 条记忆")
                 state["memory_context"] = memories
@@ -173,7 +172,7 @@ def create_workflow(
             if result.action in {"clarify", "fallback", "pending_confirmation"}:
                 state["plan"] = []
                 state["followup"] = True
-            print(f"Grill 结果: {result.action}, 字段: {result.context.fields}")
+            print(f"Grill 结果: {result.action}, 字段数: {len(result.context.fields)}")
         except Exception as exc:
             # Grill 失败不能阻断原有问答链路；记录错误并放行。
             print(f"❌ grill_check 异常，放行原流程: {exc}")
@@ -265,7 +264,7 @@ def create_workflow(
             )
 
             state["tool_outputs"][tool_name] = result
-            print(f"工具结果: {result[:200]}...")
+            print("工具执行完成")
         except Exception as e:
             print(f"❌ execute_tool 异常: {e}")
             traceback.print_exc()
@@ -344,7 +343,7 @@ def create_workflow(
             llm = get_llm()
             answer = llm.invoke(prompt)
         except Exception as exc:
-            print(f"⚠️ LLM 回答失败，使用本地兜底: {exc}")
+            print(f"⚠️ LLM 回答失败，使用本地兜底: {type(exc).__name__}")
             grill_fields = state.get("grill_context", {}).get("fields", {})
             if state.get("current_goal") == "meal_planner":
                 profile = get_profile("meal_planner")

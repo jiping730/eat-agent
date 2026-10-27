@@ -2,7 +2,7 @@ replicaCount: 2
 
 image:
   repository: eat-agent
-  tag: p04
+  tag: p05
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -48,13 +48,19 @@ podDisruptionBudget:
   enabled: false
   minAvailable: 1
 
+metrics:
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+
 nodeSelector: {}
 tolerations: []
 affinity: {}
 
 config:
   appEnv: production
-  appVersion: "0.4.0"
+  appVersion: "0.5.0"
   authMode: jwt
   jwtIssuer: eat-agent
   jwtAccessTtlMinutes: "30"
@@ -66,15 +72,18 @@ config:
   llmModel: glm-4-flash
   embeddingModel: embedding-2
   autoCreateSchema: "false"
+  strictSecurity: "true"
+  metricsEnabled: "true"
 
 secrets:
   # Create this Secret outside Helm for production. Required keys:
-  # DATABASE_URL, JWT_SECRET, ZHIPUAI_API_KEY, TAVILY_API_KEY, APP_API_KEY.
+  # DATABASE_URL, JWT_SECRET, METRICS_API_KEY, ZHIPUAI_API_KEY, TAVILY_API_KEY, APP_API_KEY.
   existingSecret: eat-agent-secrets
   create: false
   data:
     databaseUrl: ""
     jwtSecret: ""
+    metricsApiKey: ""
     zhipuaiApiKey: ""
     tavilyApiKey: ""
     appApiKey: ""

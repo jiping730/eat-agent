@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     # P03 持久化与生产运行配置
     app_env: str = "development"
-    app_version: str = "0.4.0"
+    app_version: str = "0.5.0"
     database_url: str = "sqlite:///data/app.db"
     auto_create_schema: bool = True
     app_api_key: Optional[str] = None
@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     jwt_refresh_ttl_days: int = 30
     redis_url: Optional[str] = None
     redis_lock_timeout_seconds: int = 30
+    strict_security: bool = False
+    metrics_enabled: bool = True
+    metrics_api_key: Optional[str] = None
     cors_origins: str = "*"
     max_request_bytes: int = 64 * 1024
     rate_limit_per_minute: int = 120
@@ -72,6 +75,28 @@ class Settings(BaseSettings):
         if self.auth_mode in {"jwt", "hybrid"} and not self.jwt_secret:
             warnings.append("AUTH_MODE 已启用 JWT，但未配置 JWT_SECRET，用户认证不可用。")
         return warnings
+
+    def startup_errors(self) -> list[str]:
+        """Return configuration errors that must stop a strict deployment."""
+        if not self.strict_security:
+            return []
+
+        errors: list[str] = []
+        if self.app_env.lower() not in {"production", "prod"}:
+            errors.append("STRICT_SECURITY 只能用于 production/prod 环境")
+        if self.auth_mode.lower() not in {"jwt", "hybrid"}:
+            errors.append("生产环境 AUTH_MODE 必须是 jwt 或 hybrid")
+        if not self.jwt_secret or len(self.jwt_secret) < 32:
+            errors.append("生产环境 JWT_SECRET 至少需要 32 个字符")
+        if self.cors_origins.strip() == "*":
+            errors.append("生产环境 CORS_ORIGINS 不能使用 *")
+        if not self.database_url.lower().startswith(("postgresql://", "postgresql+")):
+            errors.append("生产环境 DATABASE_URL 必须指向 PostgreSQL")
+        if not self.redis_url:
+            errors.append("生产环境必须配置 REDIS_URL")
+        if self.metrics_enabled and not self.metrics_api_key:
+            errors.append("生产环境启用 metrics 时必须配置 METRICS_API_KEY")
+        return errors
 
     def cors_origin_list(self) -> list[str] | str:
         if self.cors_origins.strip() == "*":

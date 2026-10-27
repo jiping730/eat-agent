@@ -2,18 +2,27 @@ import os
 import sys
 import time
 import uuid
+import hmac
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from flask import Flask, g, jsonify, request, render_template
 from flask_cors import CORS
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from werkzeug.exceptions import HTTPException
 
 from config import settings
 from core.auth import AuthenticationError, AuthPrincipal, AuthService, hash_refresh_token
 from core.conversation_runtime import ConversationRuntime
-from core.logging_config import configure_logging, log_event
+from core.logging_config import configure_logging, fingerprint, log_event
+from core.observability import (
+    record_conversation,
+    record_grill_decision,
+    record_http_request,
+    record_rate_limit_rejection,
+    set_app_info,
+)
 from core.persistence import ConversationAccessError
 from core.rate_limiter import SlidingWindowRateLimiter
 
@@ -23,9 +32,13 @@ app.config["MAX_CONTENT_LENGTH"] = settings.max_request_bytes
 CORS(app, origins=settings.cors_origin_list())
 
 logger = configure_logging(settings.log_level)
+startup_errors = settings.startup_errors()
+if startup_errors:
+    raise RuntimeError("生产安全配置无效: " + "; ".join(startup_errors))
 runtime = ConversationRuntime()
 auth_service = AuthService()
 rate_limiter = SlidingWindowRateLimiter(settings.rate_limit_per_minute, redis_url=settings.redis_url)
+set_app_info(settings.app_version, settings.app_env)
 
 PUBLIC_PATHS = {
     "/",
@@ -48,6 +61,21 @@ def before_request():
     g.request_started_at = time.perf_counter()
     g.principal = None
 
+    if request.path == "/metrics":
+        if not settings.metrics_enabled:
+            return _error_response("metrics 未启用", 404)
+        expected = settings.metrics_api_key
+        provided = request.headers.get("X-Metrics-Token", "")
+        if not provided:
+            authorization = request.headers.get("Authorization", "")
+            if authorization.lower().startswith("bearer "):
+                provided = authorization[7:].strip()
+        if settings.strict_security and not expected:
+            return _error_response("metrics 未配置访问密钥", 503)
+        if expected and not hmac.compare_digest(provided, expected):
+            return _error_response("metrics 未授权", 401)
+        return None
+
     if request.path in PUBLIC_PATHS or request.path.startswith("/static/"):
         return None
 
@@ -62,6 +90,7 @@ def before_request():
     if request.path == "/ask":
         client_key = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
         if not rate_limiter.allow(client_key):
+            record_rate_limit_rejection()
             return _error_response("请求过于频繁，请稍后再试", 429)
     return None
 
@@ -100,17 +129,27 @@ def after_request(response):
     if request_id:
         response.headers["X-Request-ID"] = request_id
     elapsed = time.perf_counter() - getattr(g, "request_started_at", time.perf_counter())
+    stable_path = _stable_path(request.path)
+    record_http_request(request.method, stable_path, response.status_code, elapsed)
     log_event(
         logger,
         20,
         "request_completed",
         request_id=request_id,
         method=request.method,
-        path=request.path,
+        path=stable_path,
         status_code=response.status_code,
         response_time=round(elapsed, 4),
     )
     return response
+
+
+def _stable_path(path: str) -> str:
+    if path.startswith("/conversations/"):
+        return "/conversations/:id"
+    if path.startswith("/static/"):
+        return "/static/:asset"
+    return path
 
 
 @app.errorhandler(HTTPException)
@@ -165,6 +204,13 @@ def readyz():
     return jsonify({"status": "ready", "version": settings.app_version})
 
 
+@app.route("/metrics")
+def metrics():
+    if not settings.metrics_enabled:
+        return _error_response("metrics 未启用", 404)
+    return app.response_class(generate_latest(), content_type=CONTENT_TYPE_LATEST)
+
+
 @app.route("/auth/register", methods=["POST"])
 def register():
     data = _request_json()
@@ -187,6 +233,7 @@ def register():
     except ValueError as exc:
         return _error_response(str(exc), 409)
     tokens = auth_service.issue_tokens(user.id, tuple(user.roles or []))
+    log_event(logger, 20, "auth_register_succeeded", user=fingerprint(user.id))
     runtime.store.save_refresh_token(
         user_id=user.id,
         token_hash=hash_refresh_token(tokens.refresh_token),
@@ -206,8 +253,10 @@ def login():
         return _error_response("当前服务未启用用户认证", 503)
     user = runtime.store.get_user_by_username(username.strip())
     if user is None or not user.is_active or not auth_service.verify_password(user.password_hash, password):
+        log_event(logger, 30, "auth_login_failed")
         return _error_response("用户名或密码错误", 401)
     tokens = auth_service.issue_tokens(user.id, tuple(user.roles or []))
+    log_event(logger, 20, "auth_login_succeeded", user=fingerprint(user.id))
     runtime.store.save_refresh_token(
         user_id=user.id,
         token_hash=hash_refresh_token(tokens.refresh_token),
@@ -230,6 +279,7 @@ def refresh():
         return _error_response("用户不可用", 401)
     runtime.store.revoke_refresh_token(hash_refresh_token(refresh_token))
     tokens = auth_service.issue_tokens(user.id, tuple(user.roles or []))
+    log_event(logger, 20, "auth_refresh_succeeded", user=fingerprint(user.id))
     runtime.store.save_refresh_token(
         user_id=user.id,
         token_hash=hash_refresh_token(tokens.refresh_token),

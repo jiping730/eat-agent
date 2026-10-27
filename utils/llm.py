@@ -1,7 +1,9 @@
+import time
 from typing import Optional, List
 from langchain.llms.base import LLM
 from zhipuai import ZhipuAI
 from config import settings
+from core.observability import record_llm_call
 
 class CustomZhipuChat(LLM):
     def __init__(self):
@@ -16,7 +18,9 @@ class CustomZhipuChat(LLM):
         return "zhipuai"
 
     def _call(self, prompt: str, stop: Optional[List[str]] = None, **kwargs) -> str:
+        started_at = time.perf_counter()
         if not settings.zhipuai_api_key:
+            record_llm_call("fallback", time.perf_counter() - started_at)
             raise RuntimeError("ZHIPUAI_API_KEY 未配置")
         try:
             response = self.client.chat.completions.create(
@@ -25,10 +29,12 @@ class CustomZhipuChat(LLM):
                 temperature=self.temperature,
                 timeout=30.0  # 设置超时，避免卡死
             )
-            return response.choices[0].message.content
-        except Exception as e:
-            print(f"LLM调用失败: {e}")
-            raise RuntimeError("LLM 服务暂时不可用") from e
+            answer = response.choices[0].message.content
+            record_llm_call("success", time.perf_counter() - started_at)
+            return answer
+        except Exception as exc:
+            record_llm_call("failure", time.perf_counter() - started_at)
+            raise RuntimeError("LLM 服务暂时不可用") from exc
 
 def get_llm():
     return CustomZhipuChat()

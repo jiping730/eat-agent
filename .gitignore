@@ -36,3 +36,6 @@ temp/
 *.db
 *.sqlite
 *.sqlite3
+
+# PostgreSQL backup artifacts
+backups/
