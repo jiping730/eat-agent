@@ -28,7 +28,12 @@ async def handle_list_tools() -> list[Tool]:
 async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
     if name == "calorie_query":
         food = arguments.get("food", "")
-        result = tool_registry.execute_result(name, f"{food} 热量", {"fields": {"food": food}})
+        result = tool_registry.execute_result(
+            name,
+            f"{food} 热量",
+            {"fields": {"food": food}},
+            caller="mcp",
+        )
     elif name == "meal_planner":
         calories = arguments.get("calories", "")
         meal_type = arguments.get("meal_type", "")
@@ -36,9 +41,10 @@ async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
             name,
             f"{calories}千卡 {meal_type} 组合",
             {"fields": {"calories": calories, "meal_type": meal_type}},
+            caller="mcp",
         )
     else:
-        result = tool_registry.execute_result(name, "", arguments)
+        result = tool_registry.execute_result(name, "", arguments, caller="mcp")
     return [TextContent(type="text", text=json.dumps(result.model_dump(mode="json"), ensure_ascii=False))]
 
 

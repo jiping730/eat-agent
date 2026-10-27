@@ -46,6 +46,15 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 120
     log_level: str = "INFO"
 
+    # P0-6 工具执行可靠性。小型平台采用进程内线程池和熔断状态；
+    # 跨 Pod 的统一熔断状态留到后续规模化阶段。
+    tool_default_timeout_seconds: float = 15.0
+    tool_max_attempts: int = 3
+    tool_retry_base_delay_ms: int = 200
+    tool_circuit_failure_threshold: int = 5
+    tool_circuit_recovery_seconds: float = 30.0
+    tool_executor_max_workers: int = 8
+
     # 路径配置
     BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))
     vector_store_path: str = os.path.join(BASE_DIR, "data/vector_store")

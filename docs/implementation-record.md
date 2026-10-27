@@ -511,7 +511,55 @@ Alembic：0001 → 0002 → 0003 成功执行
 - 多任务采用顺序任务队列，不实现并行多 Agent 编排。
 - Profile 管理仍是文件配置，不增加在线管理后台或配置中心。
 
-## 11. 当前已知边界
+## 11. P0-6：工具执行可靠性实施记录
+
+本阶段严格按照主线中的 `P0-6：工具执行可靠性` 实施，目标是让工具调用具备统一契约、失败隔离、有限重试和可追踪审计能力，同时保持当前小型平台的模块化单体边界。
+
+### 11.1 工具契约与权限
+
+- `core/tool_registry.py` 继续作为唯一工具执行边界，现有知识库、热量查询、餐食规划和联网搜索全部通过 Registry 注册。
+- `ToolSpec` 增加输入 Schema、输出 Schema、超时、最大尝试次数、是否允许重试、调用方和业务意图白名单。
+- 默认工具使用 Pydantic 输入模型，并对输入进行运行时校验；输出统一为 `ToolResult`，保留旧的纯文本 `execute()` 兼容入口。
+- 未注册工具、未授权调用方和不匹配业务意图的调用在真正执行前被拒绝；MCP、Skill、旧入口和 Workflow 均明确标识调用方。
+
+### 11.2 超时、重试和熔断
+
+- 工具 handler 在受控线程池中运行，默认单次超时 15 秒。
+- 仅对超时、连接错误和明确的临时错误进行重试；参数、权限、配置错误不重试。
+- 默认最多 3 次尝试，使用指数退避和轻量随机抖动；当前工具均为查询型、可安全重试。
+- 每个工具维护 `CLOSED`、`OPEN`、`HALF_OPEN` 状态，默认连续 5 次失败后熔断，30 秒后允许探测。
+- 熔断状态第一版为进程内状态，符合小型平台目标；跨 Worker/Pod 的共享熔断状态暂缓到后续规模化阶段。
+
+### 11.3 结果、来源和审计
+
+- `ToolResult` 增加 `status`、`error_code`、`trace_id`、`attempts`、`duration_ms` 和 `sources`。
+- 本地知识库结果携带文档来源，联网搜索结果携带 URL/标题，离线降级和规则工具也携带来源类型。
+- 工具异常只返回统一安全错误，不把 Python 异常信息或堆栈直接暴露给用户。
+- 通过现有 JSON 日志记录 `tool_execution` 事件，包括工具、调用方、状态、错误码、追踪 ID、请求/会话关联 ID、耗时、尝试次数和来源数量；用户标识使用指纹化值。
+
+### 11.4 配置和 Workflow 接入
+
+- 新增 `TOOL_DEFAULT_TIMEOUT_SECONDS`、`TOOL_MAX_ATTEMPTS`、`TOOL_RETRY_BASE_DELAY_MS`、`TOOL_CIRCUIT_FAILURE_THRESHOLD`、`TOOL_CIRCUIT_RECOVERY_SECONDS` 和 `TOOL_EXECUTOR_MAX_WORKERS` 配置。
+- Workflow 执行工具前继续受 Grill `execute` 门禁，并将请求、会话、用户和当前意图传入 Registry。
+- 工具失败不会再作为正常业务数据交给 LLM；Workflow 返回安全降级提示，同时保留结构化工具结果供 API 和日志使用。
+- Compose 应用镜像更新为 `eat-agent:p06`。
+
+### 11.5 P0-6 验收记录
+
+- 新增 `test_p06_tool_reliability.py`，覆盖输入校验、调用方权限、超时、重试、熔断、未知工具、安全文本和审计关联。
+- P0-6 专项测试：`8 passed`。
+- 全量项目测试：`83 passed`，保留 1 个 Starlette/httpx 弃用警告。
+- 使用全新临时 SQLite 数据库执行回归，避免旧本地数据库缺少 P03/P04/P05 迁移列影响测试。
+- Python 3.12 AST 语法检查通过，`eat-agent:p06` 镜像构建成功。
+- Docker Compose 中 PostgreSQL、Redis 和 `eat-agent:p06` 均为 healthy，`/health/live` 与 `/health/ready` 均返回 200。
+- 真实浏览器回归通过：新会话完成“信息不足 → 餐次追问 → 忌口追问 → 最终回答”，刷新页面后完整会话仍可恢复。
+
+### 11.6 本阶段边界
+
+- 不新增 Agent 框架、任务队列或工具微服务。
+- 不实现跨 Pod 共享熔断状态、在线工具市场和租户级工具策略；这些能力留到后续规模化阶段。
+
+## 12. 当前已知边界
 
 本记录只记录已经实际完成的 Grill Engine、P01、P02、P03、P04 和 P05，不把后续计划写成已完成能力。
 

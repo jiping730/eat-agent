@@ -133,6 +133,10 @@ class ConversationRuntime:
             "followup": False,
             "grill_context": snapshot.grill_context,
             "grill_result": {},
+            "tool_results": {},
+            "tool_sources": {},
+            "request_id": request_id,
+            "conversation_id": conversation_id,
         }
 
         started_at = time.perf_counter()

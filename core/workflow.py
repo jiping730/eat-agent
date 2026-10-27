@@ -7,7 +7,7 @@ from core.graph_rag import GraphRAGEngine
 from utils.llm import get_llm
 from config import settings
 from core.grill_engine import GrillEngine, field_label, get_profile
-from core.tool_registry import ToolRegistry, build_default_tool_registry
+from core.tool_registry import ToolRegistry, ToolResult, build_default_tool_registry, tool_error_message
 
 # 定义状态
 class AgentState(TypedDict):
@@ -22,6 +22,10 @@ class AgentState(TypedDict):
     followup: bool
     grill_context: Dict[str, Any]
     grill_result: Dict[str, Any]
+    tool_results: Dict[str, Any]
+    tool_sources: Dict[str, Any]
+    request_id: str
+    conversation_id: str
 
 def create_workflow(
     memory_mgr: MemoryManager | None = None,
@@ -250,6 +254,7 @@ def create_workflow(
 
     def execute_tool(state: AgentState) -> AgentState:
         print(">>> 进入 execute_tool")
+        tool_name = ""
         try:
             if not state["plan"]:
                 print("计划为空，跳过工具执行")
@@ -257,14 +262,25 @@ def create_workflow(
             tool_name = state["plan"].pop(0)
             print(f"执行工具: {tool_name}")
 
+            execution_context = dict(state.get("grill_context", {}) or {})
+            execution_context["intent"] = state.get("current_goal")
+            execution_context["request_id"] = state.get("request_id")
+            execution_context["conversation_id"] = state.get("conversation_id")
+            execution_context["user_id"] = state.get("user_id")
             result = tool_registry.execute_result(
                 tool_name,
                 state["messages"][-1]["content"],
-                state.get("grill_context", {}),
+                execution_context,
+                caller="workflow",
             )
 
-            state["tool_outputs"][tool_name] = result.text
+            if result.status == "success":
+                state["tool_outputs"][tool_name] = result.text
+            else:
+                state["tool_outputs"][tool_name] = tool_error_message(result)
+                state.setdefault("tool_failures", []).append(result.model_dump(mode="json"))
             state.setdefault("tool_results", {})[tool_name] = result.model_dump(mode="json")
+            state.setdefault("tool_sources", {})[tool_name] = result.sources
             print("工具执行完成")
         except Exception as e:
             print(f"❌ execute_tool 异常: {type(e).__name__}")
@@ -272,6 +288,13 @@ def create_workflow(
             # 确保即使出错也记录结果，避免工作流中断
             if tool_name:
                 state["tool_outputs"][tool_name] = "工具暂时不可用，请稍后重试。"
+                state.setdefault("tool_failures", []).append(
+                    {
+                        "status": "tool_execution_failed",
+                        "error_code": "tool_execution_failed",
+                        "trace_id": "workflow-fallback",
+                    }
+                )
         print("<<< 离开 execute_tool")
         return state
 
@@ -284,6 +307,14 @@ def create_workflow(
         history_text = "\n".join(history_lines)
 
         current_question = state["messages"][-1]["content"]
+
+        # 工具失败不能被当成正常业务数据继续交给 LLM 生成确定性答案。
+        # 保留统一的安全提示，同时让调用方通过 tool_results 获取具体状态。
+        tool_failures = state.get("tool_failures", [])
+        if tool_failures:
+            failure = ToolResult.model_validate(tool_failures[-1])
+            state["messages"].append({"role": "assistant", "content": tool_error_message(failure)})
+            return state
 
         if state.get("followup", False):
             # 提取最近3轮助手的回答
