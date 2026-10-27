@@ -169,7 +169,7 @@ def create_workflow(
             )
             state["grill_context"] = result.context.model_dump(mode="json")
             state["grill_result"] = result.to_dict()
-            if result.action in {"clarify", "fallback", "pending_confirmation"}:
+            if result.action in {"clarify", "fallback", "pending_confirmation", "reject", "switch", "multi_task"}:
                 state["plan"] = []
                 state["followup"] = True
             print(f"Grill 结果: {result.action}, 字段数: {len(result.context.fields)}")
@@ -412,7 +412,7 @@ def create_workflow(
     workflow.add_edge("retrieve_memory", "grill_check")
     workflow.add_conditional_edges(
         "grill_check",
-        lambda state: "respond_grill" if state.get("grill_result", {}).get("action") in {"clarify", "fallback", "pending_confirmation"} else "plan_actions",
+        lambda state: "respond_grill" if state.get("grill_result", {}).get("action") in {"clarify", "fallback", "pending_confirmation", "reject", "switch", "multi_task"} else "plan_actions",
     )
     workflow.add_edge("respond_grill", END)
     workflow.add_conditional_edges("plan_actions", should_continue)

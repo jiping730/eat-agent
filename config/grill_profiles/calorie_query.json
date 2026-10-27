@@ -1,0 +1,49 @@
+{
+  "task_type": "calorie_query",
+  "version": "1.0",
+  "max_clarifications": 3,
+  "max_total_rounds": 5,
+  "candidate_count": 3,
+  "confirmation_required": false,
+  "confidence_threshold": 0.75,
+  "refusal_policy": "fallback",
+  "fields": [
+    {
+      "name": "food",
+      "description": "食物名称",
+      "field_type": "text",
+      "priority": "critical",
+      "aliases": ["食物", "食品"],
+      "allow_free_text": true,
+      "question": "你想查询哪种食物的热量？",
+      "max_length": 100
+    },
+    {
+      "name": "amount",
+      "description": "食物重量或份量",
+      "field_type": "text",
+      "priority": "preferred",
+      "aliases": ["克", "g", "公斤", "份", "个", "块"],
+      "default_value": "100g",
+      "has_default": true
+    },
+    {
+      "name": "cooking_state",
+      "description": "生重还是熟重",
+      "field_type": "text",
+      "priority": "preferred",
+      "aliases": ["生重", "熟重", "生的", "熟的"],
+      "default_value": "未说明，按知识库常用口径估算",
+      "has_default": true
+    }
+  ],
+  "dependencies": [
+    {
+      "when": {
+        "amount": "custom"
+      },
+      "require": ["food"],
+      "message": "自定义份量必须先确认食物名称。"
+    }
+  ]
+}

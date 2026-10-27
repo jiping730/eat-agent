@@ -86,3 +86,4 @@ class AskResponse(BaseModel):
     retrieval_count: int = 0
     conversation_id: str | None = None
     request_id: str | None = None
+    grill: dict[str, Any] = Field(default_factory=dict)

@@ -1,25 +1,37 @@
 [
-  {
-    "name": "meal_planner_asks_meal_type",
-    "question": "我想增肌",
-    "expected_action": "clarify",
-    "expected_field": "meal_type"
-  },
-  {
-    "name": "meal_planner_asks_allergy",
-    "question": "晚餐",
-    "context": {"intent": "meal_planner", "fields": {"health_goal": "muscle_gain"}},
-    "expected_action": "clarify",
-    "expected_field": "allergy_info"
-  },
-  {
-    "name": "meal_planner_executes_when_complete",
-    "question": "晚餐，没有过敏或忌口",
-    "context": {
-      "intent": "meal_planner",
-      "fields": {"health_goal": "muscle_gain", "meal_type": "dinner"}
-    },
-    "expected_action": "execute",
-    "expected_field": null
-  }
+  {"name": "meal_missing_meal_type_goal", "task": "meal_planner", "question": "我想增肌", "expected_action": "clarify", "expected_field": "meal_type"},
+  {"name": "meal_missing_meal_type_generic", "task": "meal_planner", "question": "我想吃点东西", "expected_action": "clarify", "expected_field": "meal_type"},
+  {"name": "meal_missing_meal_type_plan", "task": "meal_planner", "question": "帮我安排一顿饭", "expected_action": "clarify", "expected_field": "meal_type"},
+  {"name": "meal_missing_allergy_breakfast", "task": "meal_planner", "question": "早餐", "expected_action": "clarify", "expected_field": "allergy_info"},
+  {"name": "meal_missing_allergy_dinner", "task": "meal_planner", "question": "晚餐", "context": {"intent": "meal_planner", "fields": {"health_goal": "muscle_gain"}}, "expected_action": "clarify", "expected_field": "allergy_info"},
+  {"name": "meal_complete_none", "task": "meal_planner", "question": "晚餐，没有忌口", "context": {"intent": "meal_planner", "fields": {"health_goal": "muscle_gain", "meal_type": "dinner"}}, "expected_action": "execute", "expected_field": null},
+  {"name": "meal_complete_no_allergy_phrase", "task": "meal_planner", "question": "晚餐，没有过敏或忌口", "context": {"intent": "meal_planner", "fields": {"health_goal": "muscle_gain", "meal_type": "dinner"}}, "expected_action": "execute", "expected_field": null},
+  {"name": "meal_complete_all_fields", "task": "meal_planner", "question": "晚餐，增肌，没有忌口", "expected_action": "execute", "expected_field": null},
+  {"name": "meal_complete_lunch", "task": "meal_planner", "question": "午餐，不忌口", "expected_action": "execute", "expected_field": null},
+  {"name": "meal_complete_late_night", "task": "meal_planner", "question": "宵夜，没有过敏", "expected_action": "execute", "expected_field": null},
+  {"name": "meal_pending_meal_type_answer", "task": "meal_planner", "question": "早餐", "context": {"intent": "meal_planner", "pending_field": "meal_type", "clarification_count": 1}, "expected_action": "clarify", "expected_field": "allergy_info"},
+  {"name": "meal_free_text_allergy", "task": "meal_planner", "question": "海鲜", "context": {"intent": "meal_planner", "pending_field": "allergy_info", "fields": {"meal_type": "dinner"}, "clarification_count": 1}, "expected_action": "execute", "expected_field": null},
+  {"name": "meal_unknown_allergy", "task": "meal_planner", "question": "不知道", "context": {"intent": "meal_planner", "pending_field": "allergy_info", "fields": {"meal_type": "dinner"}, "clarification_count": 1}, "expected_action": "clarify", "expected_field": "allergy_info"},
+  {"name": "meal_uncertain_allergy", "task": "meal_planner", "question": "不清楚", "context": {"intent": "meal_planner", "pending_field": "allergy_info", "fields": {"meal_type": "dinner"}, "clarification_count": 1}, "expected_action": "clarify", "expected_field": "allergy_info"},
+  {"name": "meal_free_text_peanut", "task": "meal_planner", "question": "花生", "context": {"intent": "meal_planner", "pending_field": "allergy_info", "fields": {"meal_type": "lunch"}, "clarification_count": 1}, "expected_action": "execute", "expected_field": null},
+  {"name": "meal_default_health_goal", "task": "meal_planner", "question": "晚餐，没有过敏", "expected_action": "execute", "expected_field": null},
+  {"name": "meal_default_servings", "task": "meal_planner", "question": "早餐，没有忌口", "expected_action": "execute", "expected_field": null},
+  {"name": "meal_explicit_balanced", "task": "meal_planner", "question": "午餐，均衡饮食，没有忌口", "expected_action": "execute", "expected_field": null},
+  {"name": "meal_explicit_muscle_gain", "task": "meal_planner", "question": "晚餐，增肌，没有过敏", "expected_action": "execute", "expected_field": null},
+  {"name": "meal_context_pending_dinner", "task": "meal_planner", "question": "晚餐，没有忌口", "context": {"intent": "meal_planner", "pending_field": "meal_type", "clarification_count": 1}, "expected_action": "execute", "expected_field": null},
+  {"name": "calorie_food_query", "task": "calorie_query", "question": "鸡胸肉多少热量", "expected_action": "execute", "expected_field": null},
+  {"name": "calorie_missing_food", "task": "calorie_query", "question": "多少热量", "expected_action": "clarify", "expected_field": "food"},
+  {"name": "calorie_rice", "task": "calorie_query", "question": "米饭多少卡", "expected_action": "execute", "expected_field": null},
+  {"name": "calorie_egg", "task": "calorie_query", "question": "鸡蛋卡路里", "expected_action": "execute", "expected_field": null},
+  {"name": "calorie_apple", "task": "calorie_query", "question": "苹果热量", "expected_action": "execute", "expected_field": null},
+  {"name": "calorie_amount_in_query", "task": "calorie_query", "question": "鸡胸肉多少热量，200g", "expected_action": "execute", "expected_field": null},
+  {"name": "calorie_amount_in_text", "task": "calorie_query", "question": "鸡胸肉200g多少热量", "expected_action": "execute", "expected_field": null},
+  {"name": "calorie_pending_food", "task": "calorie_query", "question": "鸡胸肉", "context": {"intent": "calorie_query", "pending_field": "food", "clarification_count": 1}, "expected_action": "execute", "expected_field": null},
+  {"name": "calorie_pending_food_unknown", "task": "calorie_query", "question": "不知道", "context": {"intent": "calorie_query", "pending_field": "food", "clarification_count": 1}, "expected_action": "clarify", "expected_field": "food"},
+  {"name": "calorie_context_amount", "task": "calorie_query", "question": "200g", "context": {"intent": "calorie_query", "fields": {"food": "鸡胸肉"}}, "expected_action": "execute", "expected_field": null},
+  {"name": "calorie_context_cooking_state", "task": "calorie_query", "question": "熟重", "context": {"intent": "calorie_query", "fields": {"food": "鸡胸肉", "amount": "100g"}}, "expected_action": "execute", "expected_field": null},
+  {"name": "calorie_pending_food_refusal", "task": "calorie_query", "question": "不想回答", "context": {"intent": "calorie_query", "pending_field": "food", "clarification_count": 1}, "expected_action": "reject", "expected_field": "food"},
+  {"name": "calorie_query_default_amount", "task": "calorie_query", "question": "牛奶多少卡", "expected_action": "execute", "expected_field": null},
+  {"name": "calorie_query_oats", "task": "calorie_query", "question": "燕麦片卡路里", "expected_action": "execute", "expected_field": null},
+  {"name": "calorie_query_food_with_context", "task": "calorie_query", "question": "鸡胸肉", "context": {"intent": "calorie_query", "pending_field": "food"}, "expected_action": "execute", "expected_field": null}
 ]

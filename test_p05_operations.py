@@ -65,14 +65,14 @@ def test_database_maintenance_scripts_accept_sqlalchemy_postgres_urls():
 
 @pytest.mark.parametrize("case", json.loads(Path("evaluation/grill_cases.json").read_text(encoding="utf-8")))
 def test_grill_evaluation_cases(case):
-    profile = get_profile("meal_planner")
+    profile = get_profile(case.get("task", "meal_planner"))
     assert profile is not None
 
     result = GrillEngine().process(
         profile,
         case["question"],
         case.get("context"),
-        current_intent="meal_planner",
+        current_intent=case.get("task", "meal_planner"),
     )
 
     assert result.action == case["expected_action"]

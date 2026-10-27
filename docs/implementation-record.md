@@ -477,7 +477,41 @@ Alembic：0001 → 0002 → 0003 成功执行
 
 本轮没有引入或验收以下能力：多租户 `tenant_id`、OIDC/企业 SSO、官方 LangGraph PostgreSQL Checkpointer、按租户加载 Grill Profile。
 
-## 10. 当前已知边界
+## 10. P0-5：Grill v1 产品化实施记录
+
+本阶段严格按照主线中的 `P0-5：Grill v1 产品化` 实施，不重复历史 `P05` 企业级运行保障。目标是让 Grill 从早期硬编码追问逻辑升级为可配置、可解释、可回归验证的业务规则引擎。
+
+### 10.1 Profile 和协议
+
+- 新增 `config/grill_profiles/meal_planner.json` 和 `config/grill_profiles/calorie_query.json`，启动时通过 Pydantic 校验并加载，按任务选择当前最高版本。
+- `FieldSpec` 支持枚举、数字、日期、自由文本、布尔值、范围、长度、默认值和置信度阈值。
+- `GrillResult` 增加 `schema_version`、`task`、`profile_version`、`confidence`、`reason`、`issues` 和 `task_queue`，统一输出 `clarify`、`execute`、`pending_confirmation`、`fallback`、`reject` 等决策。
+- `ConversationResponse` 和 API `AskResponse` 暴露完整 `grill` 决策，前端/调用方不再只能依赖自然语言文本判断是否继续。
+
+### 10.2 规则和上下文治理
+
+- 增加字段值校验、低置信度拦截、依赖规则和冲突规则；安全字段冲突时不得进入工具执行。
+- `FieldState` 记录值来源、置信度和证据，区分用户输入、默认值、推断值和拒答。
+- 用户对关键字段明确拒答时返回 `reject`；未知回答继续追问，不把“不知道”当作有效字段。
+- 用户切换意图时清理旧任务字段并记录 `previous_intent`；同一条消息识别多个已支持任务时建立顺序任务队列。
+- Profile 要求确认时进入 `awaiting_confirmation`，只有收到确认消息后才返回 `execute`。
+- Workflow 将 `reject`、`switch`、`multi_task` 与其他阻断动作一并导向追问响应节点，只有 `execute` 可以规划和执行工具。
+
+### 10.3 评测和验证
+
+- `evaluation/grill_cases.json` 扩展为 34 条黄金对话，覆盖缺字段、默认值、类型解析、拒答、未知回答、冲突、换题和热量查询。
+- 新增 `test_p05_grill_v1.py`，覆盖配置加载、统一协议、字段类型、低置信度、冲突、拒答、确认、换题、多任务和自定义 Profile。
+- Grill 专项测试和历史回归：`62 passed`。
+- 全量项目测试：`75 passed`，仅保留 1 个 Starlette/httpx 弃用警告。
+- 全量测试使用全新临时 SQLite 数据库，避免复用旧数据库文件导致迁移列缺失。
+
+### 10.4 本阶段边界
+
+- 当前只实现全局 Profile 注册表，不实现按租户加载 Profile；该能力与 `tenant_id` 一并延期到 P2。
+- 多任务采用顺序任务队列，不实现并行多 Agent 编排。
+- Profile 管理仍是文件配置，不增加在线管理后台或配置中心。
+
+## 11. 当前已知边界
 
 本记录只记录已经实际完成的 Grill Engine、P01、P02、P03、P04 和 P05，不把后续计划写成已完成能力。
 

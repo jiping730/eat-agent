@@ -29,6 +29,7 @@ class ConversationResponse:
     retrieval_count: int = 0
     conversation_id: str | None = None
     request_id: str | None = None
+    grill: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -41,6 +42,7 @@ class ConversationResponse:
             "retrieval_count": self.retrieval_count,
             "conversation_id": self.conversation_id,
             "request_id": self.request_id,
+            "grill": self.grill,
         }
 
     @classmethod
@@ -55,6 +57,7 @@ class ConversationResponse:
             retrieval_count=int(payload.get("retrieval_count", 0)),
             conversation_id=payload.get("conversation_id"),
             request_id=payload.get("request_id"),
+            grill=dict(payload.get("grill", {})),
         )
 
 
@@ -147,13 +150,16 @@ class ConversationRuntime:
         grill_result = final_state.get("grill_result", {}) or {}
         grill_action = grill_result.get("action")
         record_grill_decision(grill_action or "unknown", grill_result.get("target_field"))
-        if grill_action not in {"clarify", "fallback", "pending_confirmation"}:
+        if grill_action not in {"clarify", "fallback", "pending_confirmation", "reject", "switch", "multi_task"}:
             self.memory_mgr.add_interaction(question, answer, user_id)
 
         response_type = {
             "clarify": "clarification",
             "fallback": "clarification",
             "pending_confirmation": "confirmation",
+            "reject": "rejection",
+            "switch": "clarification",
+            "multi_task": "clarification",
         }.get(grill_action, "answer")
         target_field = grill_result.get("target_field")
         grill_context = final_state.get("grill_context", {}) or {}
@@ -168,6 +174,7 @@ class ConversationRuntime:
             retrieval_count=len(final_state.get("tool_outputs", {})),
             conversation_id=conversation_id,
             request_id=request_id,
+            grill=grill_result,
         )
 
         self.store.save_turn(
