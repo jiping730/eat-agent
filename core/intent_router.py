@@ -8,9 +8,12 @@ the Grill engine prevents every domain goal from being turned into a form.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Mapping
 
 from pydantic import BaseModel, Field
+
+from config import settings
 
 
 class RequestIntent(BaseModel):
@@ -235,3 +238,54 @@ def classify_request(
         slots=_slots_for(normalized),
         confidence=0.75 if domain == "general" else 0.85,
     )
+
+
+def classify_request_with_model(
+    text: str,
+    previous_context: Mapping[str, Any] | None = None,
+    *,
+    user_id: str | None = None,
+    gateway: Any | None = None,
+) -> RequestIntent:
+    """Use the low-cost model only when deterministic routing is uncertain.
+
+    Explicit nutrition and Grill routes remain deterministic.  The model is a
+    bounded fallback for ambiguous natural-language requests, and malformed or
+    unavailable model output always falls back to the local classifier.
+    """
+
+    deterministic = classify_request(text, previous_context)
+    if not settings.llm_intent_enabled or deterministic.confidence >= settings.llm_intent_min_confidence:
+        return deterministic
+
+    from utils.llm import ModelGateway
+
+    resolved_gateway = gateway or ModelGateway()
+    if not resolved_gateway.available:
+        return deterministic
+    prompt = f"""你是一个请求路由器。只输出合法 JSON，不要输出 Markdown 或解释。
+根据用户请求选择领域和操作，不要把“想减肥/想增肌”自动改写为制定餐单。
+允许的 domain：general、nutrition。
+允许的 operation：answer、advice、lookup、calculate、plan、execute。
+允许的 task：null、meal_planner、calorie_query、web_search。
+JSON 字段：domain、operation、task、goal、entities、slots、confidence、continuation。
+
+历史上下文：{dict(previous_context or {})}
+用户请求：{text}
+"""
+    try:
+        response = resolved_gateway.complete(prompt, task="intent", user_id=user_id)
+        content = response.content.strip()
+        if content.startswith("```"):
+            content = content.strip("`").removeprefix("json").strip()
+        payload = json.loads(content)
+        candidate = RequestIntent.model_validate(payload)
+        if candidate.domain not in {"general", "nutrition"}:
+            return deterministic
+        if candidate.operation not in {"answer", "advice", "lookup", "calculate", "plan", "execute"}:
+            return deterministic
+        if candidate.task not in {None, "meal_planner", "calorie_query", "web_search"}:
+            return deterministic
+        return candidate
+    except Exception:
+        return deterministic

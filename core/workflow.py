@@ -1,15 +1,17 @@
 import operator
-from typing import TypedDict, Annotated, List, Dict, Any
-from langgraph.graph import StateGraph, END
-from core.memory import MemoryManager
-from core.graph_rag import GraphRAGEngine
-from core.logging_config import configure_logging, log_event
-from core.observability import record_fallback, start_span
-from utils.llm import get_llm
+from typing import Annotated, Any, Dict, List, TypedDict
+
+from langgraph.graph import END, StateGraph
+
 from config import settings
+from core.graph_rag import GraphRAGEngine
 from core.grill_engine import GrillContext, GrillEngine, field_label, get_profile
-from core.intent_router import classify_request
+from core.intent_router import classify_request_with_model
+from core.logging_config import configure_logging, log_event
+from core.memory import MemoryManager
+from core.observability import record_fallback, start_span
 from core.tool_registry import ToolRegistry, ToolResult, build_default_tool_registry, tool_error_message
+from utils.llm import get_llm
 
 
 # 定义状态
@@ -62,7 +64,11 @@ def create_workflow(
     # 定义节点函数
     def understand_intent(state: AgentState) -> AgentState:
         last_msg = state["messages"][-1]["content"]
-        request = classify_request(last_msg, state.get("grill_context", {}) or {})
+        request = classify_request_with_model(
+            last_msg,
+            state.get("grill_context", {}) or {},
+            user_id=state.get("user_id"),
+        )
         state["request_intent"] = request.model_dump(mode="json")
         state["current_operation"] = request.operation
         # current_goal remains the compatibility/task key used by tools,
@@ -445,7 +451,7 @@ def create_workflow(
 上下文信息：{context}"""
 
         try:
-            llm = get_llm()
+            llm = get_llm(task="answer", user_id=state.get("user_id"))
             with start_span("llm.generate", {"intent": state.get("current_goal")}):
                 answer = llm.invoke(prompt)
         except Exception as exc:

@@ -19,6 +19,7 @@
 | P0-1～P0-4 补充（本轮） | 按主线收敛小型平台的统一边界、运行基础、会话治理和 FastAPI 接口 | 待提交 | 已实现并完成验收；明确暂缓企业级扩展 |
 | P1-0 | P1 公共基础准备：跨模块契约、模型路由指标和评测协议 | 待提交 | 已实现并完成验收；详见 [P1-0 实施文档](p1-0-implementation.md) |
 | P1-1 | 小型平台 RAG 检索质量升级 | 待提交 | 已实现并完成验收；详见 [P1-1 实施文档](p1-1-implementation.md) |
+| P1-2 | 小型平台模型网关和模型路由 | 待提交 | 已实现并完成验收；详见 [P1-2 实施文档](p1-2-implementation.md) |
 
 实施时间：2026-10-27。
 
@@ -608,9 +609,42 @@ Python 3.12 容器环境执行，RAG 词法/向量兼容和黄金来源断言通
 
 本阶段没有引入 `rank_bm25`、Qdrant、pgvector、在线 Reranker 或异步索引队列；这些能力会在数据规模和部署形态明确后再增加，避免偏离小型平台目标。
 
-## 14. 当前已知边界
+## 14. P1-2：模型网关和模型路由实施记录
 
-本记录只记录已经实际完成的 Grill Engine、P01、P02、P03、P04、P05、P0-8、P1-0 和 P1-1，不把后续计划写成已完成能力。
+本阶段严格按照主线中的 `P1-2：模型网关和模型路由` 实施，目标是把 Workflow 的模型调用收敛到统一网关，同时保持无 API Key 时的离线降级和旧版智谱适配器兼容。
+
+### 14.1 网关和 Provider
+
+- `utils/llm.py` 新增 `ModelGateway`、`GatewayResponse`、`ModelUsage` 和 `GatewayLLM`。
+- 通过 LiteLLM 统一调用 Provider，默认使用智谱 OpenAI-compatible API；主模型由 `LLM_MODEL`、`LLM_INTENT_MODEL` 和 `LLM_ANSWER_MODEL` 配置。
+- 支持 `LLM_FALLBACK_MODELS` 和 `LLM_FALLBACK_PROVIDER` 配置备用模型；路由结果使用既有 `ModelRouteDecision` 契约记录。
+- Workflow 最终回答改用 `GatewayLLM`，旧 `CustomZhipuChat` 保留作为兼容适配器，不再作为主链路入口。
+
+### 14.2 任务路由和可靠性
+
+- 高置信度的明确意图继续走本地确定性路由；低置信度请求在配置了 Key 时使用低成本 `intent` 模型补充分类，模型输出必须通过 `RequestIntent` 校验，异常自动回退到本地分类。
+- `answer` 任务默认使用回答模型，支持按任务切换模型，不让意图识别和复杂回答共用不可控的单一配置。
+- 每个候选模型支持超时和有限指数退避重试；主模型失败后按配置顺序切换备用模型。
+- 记录 Provider、模型、任务、路由、尝试次数、Token、成本、耗时和错误类型；不记录 Prompt、用户输入或 API Key。
+
+### 14.3 Token 和费用预算
+
+- `InMemoryBudgetStore` 按 UTC 日期和用户指纹记录 Token/费用使用量，支持预留、成功结算和失败释放，避免失败请求长期占用预算。
+- `LLM_USER_DAILY_TOKEN_LIMIT` 与 `LLM_USER_DAILY_COST_LIMIT` 默认关闭（0），配置后在调用前拒绝超预算请求。
+- 预算为进程内实现，适用于当前小型平台；多 Worker/Pod 共享额度需要后续迁移到 Redis 或数据库。
+
+### 14.4 配置、测试和验收
+
+- `config.py`、`.env.example` 增加 Provider、模型、超时、重试、Token、费用和意图模型配置。
+- `pyproject.toml` 和 `uv.lock` 纳入 LiteLLM 及其锁定依赖。
+- 新增 `test_p1_model_gateway.py`，覆盖主模型路由、低成本意图路由、失败重试、备用模型切换、预算拦截和非法意图输出回退。
+- P1-2 专项及相关观测回归：`16 passed`。
+
+本阶段没有引入独立模型微服务、跨 Pod 预算中心、复杂 Provider 插件市场或在线路由管理后台。
+
+## 15. 当前已知边界
+
+本记录只记录已经实际完成的 Grill Engine、P01、P02、P03、P04、P05、P0-8、P1-0、P1-1 和 P1-2，不把后续计划写成已完成能力。
 
 当前仍有以下边界：
 

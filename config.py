@@ -20,9 +20,25 @@ class Settings(BaseSettings):
     # 基础配置
     # API Key 由部署环境注入；本地开发和离线测试允许为空，调用层会走兜底逻辑。
     zhipuai_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
     tavily_api_key: Optional[str] = None
     embedding_model: str = "embedding-2"
     llm_model: str = "glm-4-flash"
+    llm_primary_provider: str = "zhipuai"
+    llm_fallback_provider: str = "zhipuai"
+    llm_api_base: str = "https://open.bigmodel.cn/api/paas/v4"
+    openai_api_base: str = "https://api.openai.com/v1"
+    llm_intent_model: str = "glm-4-flash"
+    llm_answer_model: Optional[str] = None
+    llm_fallback_models: str = ""
+    llm_intent_enabled: bool = True
+    llm_intent_min_confidence: float = 0.8
+    llm_timeout_seconds: float = 30.0
+    llm_max_attempts: int = 2
+    llm_retry_base_delay_ms: int = 200
+    llm_max_tokens: int = 4096
+    llm_user_daily_token_limit: int = 0
+    llm_user_daily_cost_limit: float = 0.0
 
     # P03 持久化与生产运行配置
     app_env: str = "development"

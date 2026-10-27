@@ -1,4 +1,4 @@
-from core.grill_engine import GrillContext, GrillEngine, PROFILES
+from core.grill_engine import GrillEngine, PROFILES
 
 
 def test_meal_planner_asks_for_meal_type_first():
