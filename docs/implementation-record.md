@@ -12,6 +12,7 @@
 | P01 | 统一 Web、CLI、旧 Agent、MCP 的 Agent 执行架构 | `9a3b88a` | 已完成 |
 | P02 | 完成配置、依赖、Docker、离线降级和运行验收 | `d232d9c` | 已完成 |
 | P03 | 持久化会话、生产运行加固和安全验收 | `b535778` | 已完成；详见 [P03 实施文档](p03-implementation.md) |
+| P04 | 小型平台、JWT、Redis 和 Kubernetes 部署层 | 待提交 | 已完成；详见 [P04 实施文档](p04-implementation.md) |
 
 实施时间：2026-10-26。
 
@@ -388,14 +389,29 @@ P03 完成后又在真实浏览器中验证了“我想增肌 → 晚餐 → 没
 - P03 实现已提交，提交为 `b535778`。
 - 最新 Docker 容器保持运行，PostgreSQL 和应用健康检查通过。
 
-## 7. 当前已知边界
+## 7. P04：小型平台与 Kubernetes 部署层
 
-本记录只记录已经实际完成的 Grill Engine、P01、P02 和 P03，不把后续计划写成已完成能力。
+P04 在 P03 的持久化基础上完成了小型平台能力，实际改动、验收和边界详见 [P04 实施文档](p04-implementation.md)。核心落地内容如下：
+
+- 增加 JWT 注册、登录、刷新、退出和当前用户接口，密码使用 PBKDF2 哈希。
+- 保留 API Key 兼容模式，并在 JWT 模式下强制以 Token 身份隔离用户会话。
+- 增加会话创建、列表、详情和归档接口，以及前端历史会话切换。
+- 增加 `users`、`refresh_tokens` 和 `idempotency_records` 数据模型，新增 `0002_platform_auth_idempotency` 迁移。
+- 使用 Redis 实现共享限流和跨 worker/Pod 会话锁；Redis 不可用时保留开发环境 fallback。
+- 对相同 `request_id` 直接恢复完整响应，避免重复执行 Workflow 和重复写入消息。
+- Compose 新增 Redis，最终镜像为 `eat-agent:p04`。
+- 新增 Helm Chart，包含 Deployment、Service、ConfigMap、Secret、迁移 Job、Redis、Ingress、HPA 和 PDB。
+- 最终镜像全量测试为 `20 passed in 4.95s`，真实浏览器完成三轮追问和最终回答验收。
+- 本机 Kubernetes 集群未启用，因此只完成 Helm lint/render，未宣称真实集群部署已验收。
+
+## 8. 当前已知边界
+
+本记录只记录已经实际完成的 Grill Engine、P01、P02、P03 和 P04，不把后续计划写成已完成能力。
 
 当前仍有以下边界：
 
-- 当前 API Key 是单实例配置，尚未接入完整的用户认证、Token 轮换和 RBAC。
-- 限流器当前是单进程内存实现，多副本部署时应替换为 Redis 等共享限流存储。
+- JWT 用户认证、Refresh Token 轮换和 Redis 共享协调已在 P04 落地；完整 RBAC、审计和企业 SSO 仍未接入。
+- Kubernetes 真实集群、Ingress Controller、Metrics Server 和生产级 Redis/PostgreSQL 高可用尚未在本机验收。
 - 还没有完整的 CI/CD、指标监控、告警和分布式链路追踪。
 - PostgreSQL 备份、恢复演练、TLS 和更细粒度的数据访问策略仍需按生产环境补齐。
 - 未配置模型 Key 时只能使用离线降级能力，不能获得完整的模型生成答案。

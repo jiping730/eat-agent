@@ -26,10 +26,17 @@ class Settings(BaseSettings):
 
     # P03 持久化与生产运行配置
     app_env: str = "development"
-    app_version: str = "0.3.0"
+    app_version: str = "0.4.0"
     database_url: str = "sqlite:///data/app.db"
     auto_create_schema: bool = True
     app_api_key: Optional[str] = None
+    auth_mode: str = "auto"  # auto, none, api_key, jwt, hybrid
+    jwt_secret: Optional[str] = None
+    jwt_issuer: str = "eat-agent"
+    jwt_access_ttl_minutes: int = 30
+    jwt_refresh_ttl_days: int = 30
+    redis_url: Optional[str] = None
+    redis_lock_timeout_seconds: int = 30
     cors_origins: str = "*"
     max_request_bytes: int = 64 * 1024
     rate_limit_per_minute: int = 120
@@ -62,6 +69,8 @@ class Settings(BaseSettings):
             warnings.append("未配置 ZHIPUAI_API_KEY，将使用离线降级能力。")
         if self.use_graphrag and not self.neo4j_password:
             warnings.append("USE_GRAPHRAG 已开启，但未配置 NEO4J_PASSWORD，GraphRAG 将不可用。")
+        if self.auth_mode in {"jwt", "hybrid"} and not self.jwt_secret:
+            warnings.append("AUTH_MODE 已启用 JWT，但未配置 JWT_SECRET，用户认证不可用。")
         return warnings
 
     def cors_origin_list(self) -> list[str] | str:

@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "eat-agent.fullname" . }}-config
+  labels:
+    {{- include "eat-agent.labels" . | nindent 4 }}
+data:
+  APP_ENV: {{ .Values.config.appEnv | quote }}
+  APP_VERSION: {{ .Values.config.appVersion | quote }}
+  AUTH_MODE: {{ .Values.config.authMode | quote }}
+  JWT_ISSUER: {{ .Values.config.jwtIssuer | quote }}
+  JWT_ACCESS_TTL_MINUTES: {{ .Values.config.jwtAccessTtlMinutes | quote }}
+  JWT_REFRESH_TTL_DAYS: {{ .Values.config.jwtRefreshTtlDays | quote }}
+  CORS_ORIGINS: {{ .Values.config.corsOrigins | quote }}
+  MAX_REQUEST_BYTES: {{ .Values.config.maxRequestBytes | quote }}
+  RATE_LIMIT_PER_MINUTE: {{ .Values.config.rateLimitPerMinute | quote }}
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  LLM_MODEL: {{ .Values.config.llmModel | quote }}
+  EMBEDDING_MODEL: {{ .Values.config.embeddingModel | quote }}
+  AUTO_CREATE_SCHEMA: {{ .Values.config.autoCreateSchema | quote }}
+  REDIS_URL: {{ include "eat-agent.redisUrl" . | quote }}
+  REDIS_LOCK_TIMEOUT_SECONDS: "30"

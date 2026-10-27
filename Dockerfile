@@ -11,4 +11,4 @@ RUN pip install .
 
 EXPOSE 5000
 
-CMD ["sh", "-c", "alembic upgrade head && exec gunicorn --bind 0.0.0.0:5000 --workers 2 --timeout 120 front.app:app"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "120", "front.app:app"]

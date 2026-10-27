@@ -12,6 +12,7 @@ from typing import Any
 from config import settings
 from core.memory import MemoryManager
 from core.persistence import ConversationStore
+from core.redis_support import RedisCoordinator
 from core.tool_registry import build_default_tool_registry
 from core.workflow import create_workflow
 
@@ -41,6 +42,20 @@ class ConversationResponse:
             "request_id": self.request_id,
         }
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ConversationResponse":
+        return cls(
+            answer=str(payload.get("answer", "")),
+            type=str(payload.get("type", "answer")),
+            target_field=payload.get("target_field"),
+            options=list(payload.get("options", [])),
+            assumptions=list(payload.get("assumptions", [])),
+            response_time=float(payload.get("response_time", 0)),
+            retrieval_count=int(payload.get("retrieval_count", 0)),
+            conversation_id=payload.get("conversation_id"),
+            request_id=payload.get("request_id"),
+        )
+
 
 class ConversationRuntime:
     """Own the canonical workflow invocation and durable conversation state."""
@@ -61,6 +76,7 @@ class ConversationRuntime:
             tool_registry=self.tool_registry,
         )
         self._locks: defaultdict[str, threading.RLock] = defaultdict(threading.RLock)
+        self.coordinator = RedisCoordinator()
 
     def ask(
         self,
@@ -77,12 +93,20 @@ class ConversationRuntime:
         resolved_request_id = request_id or str(uuid.uuid4())
         normalized_question = question.strip()
         with self._locks[resolved_conversation_id]:
-            return self._ask_locked(
-                normalized_question,
-                resolved_user_id,
-                resolved_conversation_id,
-                resolved_request_id,
-            )
+            with self.coordinator.conversation_lock(resolved_conversation_id):
+                existing_response = self.store.get_idempotent_response(
+                    resolved_conversation_id,
+                    resolved_user_id,
+                    resolved_request_id,
+                )
+                if existing_response is not None:
+                    return ConversationResponse.from_dict(existing_response)
+                return self._ask_locked(
+                    normalized_question,
+                    resolved_user_id,
+                    resolved_conversation_id,
+                    resolved_request_id,
+                )
 
     def _ask_locked(
         self,
@@ -132,19 +156,7 @@ class ConversationRuntime:
         target_field = grill_result.get("target_field")
         grill_context = final_state.get("grill_context", {}) or {}
 
-        self.store.save_turn(
-            conversation_id=conversation_id,
-            user_id=user_id,
-            request_id=request_id,
-            user_message=question,
-            assistant_message=answer,
-            grill_context=grill_context,
-            current_goal=final_state.get("current_goal"),
-            response_type=response_type,
-            target_field=target_field,
-        )
-
-        return ConversationResponse(
+        response = ConversationResponse(
             answer=answer,
             type=response_type,
             target_field=target_field,
@@ -155,3 +167,18 @@ class ConversationRuntime:
             conversation_id=conversation_id,
             request_id=request_id,
         )
+
+        self.store.save_turn(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            request_id=request_id,
+            user_message=question,
+            assistant_message=answer,
+            grill_context=grill_context,
+            current_goal=final_state.get("current_goal"),
+            response_type=response_type,
+            target_field=target_field,
+            response_payload=response.to_dict(),
+        )
+
+        return response

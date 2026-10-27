@@ -16,6 +16,8 @@ class CustomZhipuChat(LLM):
         return "zhipuai"
 
     def _call(self, prompt: str, stop: Optional[List[str]] = None, **kwargs) -> str:
+        if not settings.zhipuai_api_key:
+            raise RuntimeError("ZHIPUAI_API_KEY 未配置")
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -26,7 +28,7 @@ class CustomZhipuChat(LLM):
             return response.choices[0].message.content
         except Exception as e:
             print(f"LLM调用失败: {e}")
-            return "抱歉，我暂时无法回答这个问题。"
+            raise RuntimeError("LLM 服务暂时不可用") from e
 
 def get_llm():
     return CustomZhipuChat()

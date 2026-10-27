@@ -11,7 +11,21 @@
         <header class="chat-header">
             <h1>🥗 轻松食 · 营养问答</h1>
             <p>问我任何关于食物热量、餐食搭配的问题</p>
+            <div class="auth-bar" id="authBar">
+                <input type="text" id="usernameInput" placeholder="用户名">
+                <input type="password" id="passwordInput" placeholder="密码">
+                <button type="button" id="loginBtn">登录</button>
+                <button type="button" id="registerBtn">注册</button>
+                <button type="button" id="logoutBtn" hidden>退出</button>
+                <span id="authStatus"></span>
+            </div>
         </header>
+        <div class="conversation-toolbar">
+            <button type="button" id="newConversationBtn">新建会话</button>
+            <select id="conversationSelect" aria-label="历史会话">
+                <option value="">当前会话</option>
+            </select>
+        </div>
         <div class="chat-messages" id="chatMessages">
             <div class="message bot-message">
                 <div class="avatar">🤖</div>

@@ -13,8 +13,19 @@ services:
       timeout: 5s
       retries: 12
 
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
   eat-agent:
-    image: eat-agent:p03
+    image: eat-agent:p04
     build: .
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://eat_agent:eat_agent@postgres:5432/eat_agent}
@@ -24,14 +35,23 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embedding-2}
       AUTO_CREATE_SCHEMA: ${AUTO_CREATE_SCHEMA:-false}
       APP_ENV: ${APP_ENV:-production}
-      APP_VERSION: ${APP_VERSION:-0.3.0}
+      APP_VERSION: ${APP_VERSION:-0.4.0}
       APP_API_KEY: ${APP_API_KEY:-}
+      AUTH_MODE: ${AUTH_MODE:-auto}
+      JWT_SECRET: ${JWT_SECRET:-}
+      JWT_ISSUER: ${JWT_ISSUER:-eat-agent}
+      JWT_ACCESS_TTL_MINUTES: ${JWT_ACCESS_TTL_MINUTES:-30}
+      JWT_REFRESH_TTL_DAYS: ${JWT_REFRESH_TTL_DAYS:-30}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      REDIS_LOCK_TIMEOUT_SECONDS: ${REDIS_LOCK_TIMEOUT_SECONDS:-30}
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-65536}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     ports:
       - "5000:5000"
@@ -49,3 +69,4 @@ services:
 volumes:
   postgres_data:
   app_data:
+  redis_data:

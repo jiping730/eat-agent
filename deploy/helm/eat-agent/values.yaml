@@ -1,0 +1,92 @@
+replicaCount: 2
+
+image:
+  repository: eat-agent
+  tag: p04
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: false
+  name: ""
+
+podAnnotations: {}
+
+service:
+  type: ClusterIP
+  port: 5000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: eat-agent.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 4
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+config:
+  appEnv: production
+  appVersion: "0.4.0"
+  authMode: jwt
+  jwtIssuer: eat-agent
+  jwtAccessTtlMinutes: "30"
+  jwtRefreshTtlDays: "30"
+  corsOrigins: "https://eat-agent.local"
+  maxRequestBytes: "65536"
+  rateLimitPerMinute: "120"
+  logLevel: INFO
+  llmModel: glm-4-flash
+  embeddingModel: embedding-2
+  autoCreateSchema: "false"
+
+secrets:
+  # Create this Secret outside Helm for production. Required keys:
+  # DATABASE_URL, JWT_SECRET, ZHIPUAI_API_KEY, TAVILY_API_KEY, APP_API_KEY.
+  existingSecret: eat-agent-secrets
+  create: false
+  data:
+    databaseUrl: ""
+    jwtSecret: ""
+    zhipuaiApiKey: ""
+    tavilyApiKey: ""
+    appApiKey: ""
+
+migration:
+  enabled: true
+  backoffLimit: 3
+
+redis:
+  enabled: true
+  image: redis:7-alpine
+  servicePort: 6379
+  persistence:
+    enabled: false
+    size: 1Gi
