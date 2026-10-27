@@ -26,7 +26,7 @@ class Settings(BaseSettings):
 
     # P03 持久化与生产运行配置
     app_env: str = "development"
-    app_version: str = "0.5.0"
+    app_version: str = "0.7.0"
     database_url: str = "sqlite:///data/app.db"
     auto_create_schema: bool = True
     app_api_key: Optional[str] = None
@@ -54,6 +54,18 @@ class Settings(BaseSettings):
     tool_circuit_failure_threshold: int = 5
     tool_circuit_recovery_seconds: float = 30.0
     tool_executor_max_workers: int = 8
+
+    # P0-7 可选链路追踪和 LLM 观测。未配置时使用本地 JSON 日志和 Prometheus。
+    otel_enabled: bool = False
+    otel_service_name: str = "eat-agent"
+    otel_exporter_otlp_endpoint: Optional[str] = None
+    langfuse_enabled: bool = False
+    langfuse_public_key: Optional[str] = None
+    langfuse_secret_key: Optional[str] = None
+    langfuse_host: Optional[str] = None
+    langfuse_capture_content: bool = False
+    llm_input_cost_per_1k: float = 0.0
+    llm_output_cost_per_1k: float = 0.0
 
     # 路径配置
     BASE_DIR: str = os.path.dirname(os.path.abspath(__file__))

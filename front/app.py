@@ -25,7 +25,15 @@ from config import settings
 from core.auth import AuthenticationError, AuthPrincipal, AuthService, hash_refresh_token
 from core.conversation_runtime import ConversationRuntime
 from core.logging_config import configure_logging, fingerprint, log_event
-from core.observability import record_http_request, record_rate_limit_rejection, set_app_info
+from core.observability import (
+    bind_observation_context,
+    configure_optional_observability,
+    new_trace_id,
+    record_http_request,
+    record_rate_limit_rejection,
+    reset_observation_context,
+    set_app_info,
+)
 from core.persistence import ConversationAccessError
 from core.rate_limiter import SlidingWindowRateLimiter
 from front.schemas import (
@@ -61,6 +69,7 @@ logger = configure_logging(settings.log_level)
 startup_errors = settings.startup_errors()
 if startup_errors:
     raise RuntimeError("生产安全配置无效: " + "; ".join(startup_errors))
+configure_optional_observability()
 runtime = ConversationRuntime()
 auth_service = AuthService()
 rate_limiter = SlidingWindowRateLimiter(settings.rate_limit_per_minute, redis_url=settings.redis_url)
@@ -84,6 +93,10 @@ PUBLIC_PATHS = {
 
 def _request_id(request: Request) -> str:
     return getattr(request.state, "request_id", "")
+
+
+def _trace_id(request: Request) -> str:
+    return getattr(request.state, "trace_id", "")
 
 
 def _error_response(request: Request, message: str, status_code: int, error_code: str = "request_error") -> JSONResponse:
@@ -149,40 +162,49 @@ async def _call_with_rate_limit(request: Request, call_next):
 @app.middleware("http")
 async def request_context(request: Request, call_next):
     request.state.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.trace_id = request.headers.get("X-Trace-ID") or new_trace_id()
     request.state.request_started_at = time.perf_counter()
     request.state.principal = None
-
-    if request.url.path == "/metrics":
-        early_response = _metrics_auth_error(request)
-        response = early_response if early_response is not None else await call_next(request)
-    elif request.url.path not in PUBLIC_PATHS and not request.url.path.startswith("/static/"):
-        try:
-            request.state.principal = auth_service.authenticate(
-                request.headers.get("Authorization"),
-                request.headers.get("X-API-Key"),
-            )
-        except AuthenticationError as exc:
-            response = _error_response(request, str(exc), 401, "authentication_required")
-        else:
-            response = await _call_with_rate_limit(request, call_next)
-    else:
-        response = await call_next(request)
-
-    response.headers["X-Request-ID"] = request.state.request_id
-    elapsed = time.perf_counter() - request.state.request_started_at
-    stable_path = _stable_path(request.url.path)
-    record_http_request(request.method, stable_path, response.status_code, elapsed)
-    log_event(
-        logger,
-        20,
-        "request_completed",
+    context_token = bind_observation_context(
         request_id=request.state.request_id,
-        method=request.method,
-        path=stable_path,
-        status_code=response.status_code,
-        response_time=round(elapsed, 4),
+        trace_id=request.state.trace_id,
     )
-    return response
+    try:
+        if request.url.path == "/metrics":
+            early_response = _metrics_auth_error(request)
+            response = early_response if early_response is not None else await call_next(request)
+        elif request.url.path not in PUBLIC_PATHS and not request.url.path.startswith("/static/"):
+            try:
+                request.state.principal = auth_service.authenticate(
+                    request.headers.get("Authorization"),
+                    request.headers.get("X-API-Key"),
+                )
+            except AuthenticationError as exc:
+                response = _error_response(request, str(exc), 401, "authentication_required")
+            else:
+                response = await _call_with_rate_limit(request, call_next)
+        else:
+            response = await call_next(request)
+
+        response.headers["X-Request-ID"] = request.state.request_id
+        response.headers["X-Trace-ID"] = request.state.trace_id
+        elapsed = time.perf_counter() - request.state.request_started_at
+        stable_path = _stable_path(request.url.path)
+        record_http_request(request.method, stable_path, response.status_code, elapsed)
+        log_event(
+            logger,
+            20,
+            "request_completed",
+            request_id=request.state.request_id,
+            trace_id=request.state.trace_id,
+            method=request.method,
+            path=stable_path,
+            status_code=response.status_code,
+            response_time=round(elapsed, 4),
+        )
+        return response
+    finally:
+        reset_observation_context(context_token)
 
 
 @app.exception_handler(ConversationAccessError)
@@ -389,6 +411,7 @@ def ask(data: AskRequest, request: Request):
         user_id=user_id,
         conversation_id=data.conversation_id,
         request_id=_request_id(request),
+        trace_id=_trace_id(request),
     )
     return response.to_dict()
 

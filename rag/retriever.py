@@ -1,15 +1,58 @@
+"""Local vector retrieval with bounded metrics and trace correlation."""
+
+from __future__ import annotations
+
+import time
+
+from core.logging_config import configure_logging, log_event
+from core.observability import record_rag_retrieval, start_span
 from rag.vector_store import get_or_create_vector_store
 
-def get_retriever_with_score(score_threshold=2.0):
+
+def get_retriever_with_score(score_threshold: float = 2.0):
+    """Return a retriever that records hit rate, latency, and result count.
+
+    Query text is intentionally excluded from logs, metric labels, and span
+    attributes because it can contain personal or health information.
     """
-    返回一个检索函数，该函数接受查询，返回分数高于阈值的文档列表。
-    """
-    vectorstore = get_or_create_vector_store()
+
+    logger = configure_logging()
+
     def retrieve(query: str):
-        # 返回 (文档, 分数) 列表，分数越低表示越相似（余弦距离）
-        docs_with_scores = vectorstore.similarity_search_with_score(query, k=4)
-        # 过滤掉分数高于阈值（即距离过大）的文档（根据实际距离含义调整）
-        # 注意：FAISS 默认返回 L2 距离，越小越相似，所以用小于阈值
-        filtered_docs = [doc for doc, score in docs_with_scores if score < score_threshold]
-        return filtered_docs
+        started_at = time.perf_counter()
+        document_count = 0
+        with start_span(
+            "rag.retrieve",
+            {"rag.score_threshold": float(score_threshold)},
+        ):
+            try:
+                vectorstore = get_or_create_vector_store()
+                docs_with_scores = vectorstore.similarity_search_with_score(query, k=4)
+                # FAISS returns L2 distance: lower values are more similar.
+                filtered_docs = [doc for doc, score in docs_with_scores if score < score_threshold]
+                document_count = len(filtered_docs)
+                elapsed = time.perf_counter() - started_at
+                record_rag_retrieval("success", bool(filtered_docs), elapsed, document_count)
+                log_event(
+                    logger,
+                    20,
+                    "rag_retrieval_completed",
+                    status="success",
+                    hit=bool(filtered_docs),
+                    document_count=document_count,
+                    duration_ms=round(elapsed * 1000, 2),
+                )
+                return filtered_docs
+            except Exception as exc:
+                elapsed = time.perf_counter() - started_at
+                record_rag_retrieval("error", False, elapsed, document_count)
+                log_event(
+                    logger,
+                    30,
+                    "rag_retrieval_failed",
+                    error_type=type(exc).__name__,
+                    duration_ms=round(elapsed * 1000, 2),
+                )
+                raise
+
     return retrieve

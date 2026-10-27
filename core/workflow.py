@@ -1,9 +1,10 @@
 import operator
 from typing import TypedDict, Annotated, List, Dict, Any
-import traceback
 from langgraph.graph import StateGraph, END
 from core.memory import MemoryManager
 from core.graph_rag import GraphRAGEngine
+from core.logging_config import configure_logging, log_event
+from core.observability import record_fallback, start_span
 from utils.llm import get_llm
 from config import settings
 from core.grill_engine import GrillEngine, field_label, get_profile
@@ -26,6 +27,8 @@ class AgentState(TypedDict):
     tool_sources: Dict[str, Any]
     request_id: str
     conversation_id: str
+    trace_id: str
+    tool_failures: List[Dict[str, Any]]
 
 def create_workflow(
     memory_mgr: MemoryManager | None = None,
@@ -33,9 +36,10 @@ def create_workflow(
     checkpointer: Any | None = None,
 ):
     # 初始化组件
-    print("正在初始化 MemoryManager...")
     memory_mgr = memory_mgr or MemoryManager()
-    print("MemoryManager 初始化完成")
+    logger = configure_logging(settings.log_level)
+    log_event(logger, 20, "workflow_component_initializing", component="memory")
+    log_event(logger, 20, "workflow_component_initialized", component="memory")
     grill_engine = GrillEngine()
     tool_registry = tool_registry or build_default_tool_registry()
 
@@ -43,16 +47,15 @@ def create_workflow(
     graph_rag = None
     if settings.use_graphrag:
         try:
-            print("正在初始化 GraphRAGEngine...")
+            log_event(logger, 20, "workflow_component_initializing", component="graphrag")
             graph_rag = GraphRAGEngine()
-            print("GraphRAGEngine 初始化成功")
+            log_event(logger, 20, "workflow_component_initialized", component="graphrag")
         except Exception as e:
-            print(f"警告: GraphRAG 初始化失败，已禁用图检索功能: {e}")
+            log_event(logger, 30, "workflow_component_disabled", component="graphrag", error_type=type(e).__name__)
             graph_rag = None
 
     # 定义节点函数
     def understand_intent(state: AgentState) -> AgentState:
-        print(">>> 进入 understand_intent")
         try:
             last_msg = state["messages"][-1]["content"]
 
@@ -75,7 +78,6 @@ def create_workflow(
                     return state
                 else:
                     state["current_goal"] = pending_intent
-                    print(f"沿用 Grill 意图: {state['current_goal']}")
                     return state
 
             # 常见营养场景先走确定性识别，只有无法判断时才调用 LLM。
@@ -120,10 +122,9 @@ def create_workflow(
             else:
                 state["current_goal"] = "general"
 
-            print(f"当前目标: {state['current_goal']}")
+            log_event(logger, 20, "intent_detected", intent=state["current_goal"])
         except Exception as e:
-            print(f"❌ understand_intent 异常: {e}")
-            traceback.print_exc()
+            log_event(logger, 40, "intent_detection_failed", error_type=type(e).__name__)
             # 回退关键词匹配
             if "热量" in last_msg:
                 state["current_goal"] = "calorie_query"
@@ -133,31 +134,24 @@ def create_workflow(
                 state["current_goal"] = "web_search"
             else:
                 state["current_goal"] = "general"
-        print("<<< 离开 understand_intent")
         return state
 
     def retrieve_memory(state: AgentState) -> AgentState:
-        print(">>> 进入 retrieve_memory")
         try:
             if state.get("followup", False):
-                print("追问模式，跳过长期记忆检索")
                 state["memory_context"] = []
             else:
                 query = state["messages"][-1]["content"]
-                print("检索记忆，已执行")
                 memories = memory_mgr.retrieve_relevant_memories(query, user_id=state["user_id"])
-                print(f"检索到 {len(memories)} 条记忆")
                 state["memory_context"] = memories
+                log_event(logger, 20, "memory_retrieved", result_count=len(memories))
         except Exception as e:
-            print(f"❌ retrieve_memory 异常: {e}")
-            traceback.print_exc()
+            log_event(logger, 40, "memory_retrieval_failed", error_type=type(e).__name__)
             state["memory_context"] = []
-        print("<<< 离开 retrieve_memory")
         return state
 
     def grill_check(state: AgentState) -> AgentState:
         """阻止信息不足的任务进入工具执行阶段。"""
-        print(">>> 进入 grill_check")
         try:
             intent = state.get("current_goal", "general")
             profile = get_profile(intent)
@@ -165,24 +159,46 @@ def create_workflow(
                 state["grill_result"] = {"action": "execute"}
                 return state
 
-            result = grill_engine.process(
-                profile,
-                state["messages"][-1]["content"],
-                state.get("grill_context", {}),
-                current_intent=intent,
-            )
+            with start_span(
+                "grill.check",
+                {
+                    "grill.intent": intent,
+                    "grill.round": (state.get("grill_context", {}) or {}).get("total_rounds", 0),
+                },
+            ):
+                result = grill_engine.process(
+                    profile,
+                    state["messages"][-1]["content"],
+                    state.get("grill_context", {}),
+                    current_intent=intent,
+                )
             state["grill_context"] = result.context.model_dump(mode="json")
             state["grill_result"] = result.to_dict()
             if result.action in {"clarify", "fallback", "pending_confirmation", "reject", "switch", "multi_task"}:
                 state["plan"] = []
                 state["followup"] = True
-            print(f"Grill 结果: {result.action}, 字段数: {len(result.context.fields)}")
+            log_event(
+                logger,
+                20,
+                "grill_decision",
+                intent=intent,
+                action=result.action,
+                reason=result.reason,
+                target_field=result.target_field,
+                field_count=len(result.context.fields),
+                grill_round=result.context.total_rounds,
+            )
         except Exception as exc:
             # Grill 失败不能阻断原有问答链路；记录错误并放行。
-            print(f"❌ grill_check 异常，放行原流程: {exc}")
-            traceback.print_exc()
-            state["grill_result"] = {"action": "execute", "error": str(exc)}
-        print("<<< 离开 grill_check")
+            log_event(logger, 40, "grill_check_failed", error_type=type(exc).__name__)
+            record_fallback("grill_error")
+            state["grill_result"] = {
+                "action": "fallback",
+                "error_code": "grill_unavailable",
+                "message": "暂时无法判断所需信息，请补充你的目标、对象或限制条件。",
+            }
+            state["plan"] = []
+            state["followup"] = True
         return state
 
     def respond_grill(state: AgentState) -> AgentState:
@@ -193,7 +209,6 @@ def create_workflow(
         return state
 
     def plan_actions(state: AgentState) -> AgentState:
-        print(">>> 进入 plan_actions")
         try:
             goal = state["current_goal"]
             current_user_msg = state["messages"][-1]["content"]
@@ -232,40 +247,34 @@ def create_workflow(
                 # 优先处理搜索意图
                 state["plan"] = ["web_search"]
                 state["followup"] = False
-                print("检测到搜索意图，执行联网搜索")
             elif is_followup:
                 state["plan"] = []
                 state["followup"] = True
-                print("检测到追问，跳过工具调用")
             elif goal in ["calorie_query", "meal_planner"]:
                 state["plan"] = [goal]
                 state["followup"] = False
             else:
                 state["plan"] = []
                 state["followup"] = False
-            print(f"执行计划: {state['plan']}, followup: {state.get('followup', False)}")
+            log_event(logger, 20, "workflow_plan_created", plan_size=len(state["plan"]), followup=state.get("followup", False))
         except Exception as e:
-            print(f"❌ plan_actions 异常: {e}")
-            traceback.print_exc()
+            log_event(logger, 40, "workflow_plan_failed", error_type=type(e).__name__)
             state["plan"] = []
             state["followup"] = False
-        print("<<< 离开 plan_actions")
         return state
 
     def execute_tool(state: AgentState) -> AgentState:
-        print(">>> 进入 execute_tool")
         tool_name = ""
         try:
             if not state["plan"]:
-                print("计划为空，跳过工具执行")
                 return state
             tool_name = state["plan"].pop(0)
-            print(f"执行工具: {tool_name}")
 
             execution_context = dict(state.get("grill_context", {}) or {})
             execution_context["intent"] = state.get("current_goal")
             execution_context["request_id"] = state.get("request_id")
             execution_context["conversation_id"] = state.get("conversation_id")
+            execution_context["trace_id"] = state.get("trace_id")
             execution_context["user_id"] = state.get("user_id")
             result = tool_registry.execute_result(
                 tool_name,
@@ -281,10 +290,9 @@ def create_workflow(
                 state.setdefault("tool_failures", []).append(result.model_dump(mode="json"))
             state.setdefault("tool_results", {})[tool_name] = result.model_dump(mode="json")
             state.setdefault("tool_sources", {})[tool_name] = result.sources
-            print("工具执行完成")
+            log_event(logger, 20, "workflow_tool_completed", tool_name=tool_name, status=result.status)
         except Exception as e:
-            print(f"❌ execute_tool 异常: {type(e).__name__}")
-            traceback.print_exc()
+            log_event(logger, 40, "workflow_tool_failed", tool_name=tool_name, error_type=type(e).__name__)
             # 确保即使出错也记录结果，避免工作流中断
             if tool_name:
                 state["tool_outputs"][tool_name] = "工具暂时不可用，请稍后重试。"
@@ -292,10 +300,9 @@ def create_workflow(
                     {
                         "status": "tool_execution_failed",
                         "error_code": "tool_execution_failed",
-                        "trace_id": "workflow-fallback",
+                        "trace_id": state.get("trace_id") or "workflow-fallback",
                     }
                 )
-        print("<<< 离开 execute_tool")
         return state
 
     def generate_answer(state: AgentState) -> AgentState:
@@ -373,9 +380,11 @@ def create_workflow(
 
         try:
             llm = get_llm()
-            answer = llm.invoke(prompt)
+            with start_span("llm.generate", {"intent": state.get("current_goal")}):
+                answer = llm.invoke(prompt)
         except Exception as exc:
-            print(f"⚠️ LLM 回答失败，使用本地兜底: {type(exc).__name__}")
+            log_event(logger, 30, "llm_answer_fallback", error_type=type(exc).__name__)
+            record_fallback("llm_error")
             grill_fields = state.get("grill_context", {}).get("fields", {})
             if state.get("current_goal") == "meal_planner":
                 profile = get_profile("meal_planner")
@@ -397,36 +406,26 @@ def create_workflow(
         return state
 
     def reflect(state: AgentState) -> AgentState:
-        print(">>> 进入 reflect")
         try:
             last_user_msg = state["messages"][-2]["content"]
             last_assistant_msg = state["messages"][-1]["content"]
             memory_mgr.save_meta(last_user_msg, last_assistant_msg, 1.0)
-            print("元记忆已保存")
         except Exception as e:
-            print(f"❌ reflect 异常: {e}")
-            traceback.print_exc()
-        print("<<< 离开 reflect")
+            log_event(logger, 40, "memory_reflection_failed", error_type=type(e).__name__)
         return state
 
     def should_continue(state: AgentState) -> str:
-        print(">>> 进入 should_continue")
         try:
             if state["plan"]:
-                print("计划非空，继续执行工具")
                 return "execute_tool"
             else:
-                print("计划为空，转向生成答案")
                 return "generate_answer"
         except Exception as e:
-            print(f"❌ should_continue 异常: {e}")
-            traceback.print_exc()
+            log_event(logger, 40, "workflow_routing_failed", error_type=type(e).__name__)
             return "generate_answer"
-        finally:
-            print("<<< 离开 should_continue")
 
     # 构建图
-    print("开始构建 StateGraph...")
+    log_event(logger, 20, "workflow_graph_building")
     workflow = StateGraph(AgentState)
 
     workflow.add_node("understand", understand_intent)

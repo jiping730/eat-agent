@@ -20,5 +20,13 @@ data:
   AUTO_CREATE_SCHEMA: {{ .Values.config.autoCreateSchema | quote }}
   STRICT_SECURITY: {{ .Values.config.strictSecurity | quote }}
   METRICS_ENABLED: {{ .Values.config.metricsEnabled | quote }}
+  OTEL_ENABLED: {{ .Values.config.otelEnabled | quote }}
+  OTEL_SERVICE_NAME: {{ .Values.config.otelServiceName | quote }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.config.otelExporterOtlpEndpoint | quote }}
+  LANGFUSE_ENABLED: {{ .Values.config.langfuseEnabled | quote }}
+  LANGFUSE_HOST: {{ .Values.config.langfuseHost | quote }}
+  LANGFUSE_CAPTURE_CONTENT: {{ .Values.config.langfuseCaptureContent | quote }}
+  LLM_INPUT_COST_PER_1K: {{ .Values.config.llmInputCostPer1k | quote }}
+  LLM_OUTPUT_COST_PER_1K: {{ .Values.config.llmOutputCostPer1k | quote }}
   REDIS_URL: {{ include "eat-agent.redisUrl" . | quote }}
   REDIS_LOCK_TIMEOUT_SECONDS: "30"

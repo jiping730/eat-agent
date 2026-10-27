@@ -25,7 +25,7 @@ services:
       retries: 12
 
   eat-agent:
-    image: eat-agent:p06
+    image: eat-agent:p07
     build: .
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://eat_agent:eat_agent@postgres:5432/eat_agent}
@@ -35,7 +35,7 @@ services:
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embedding-2}
       AUTO_CREATE_SCHEMA: ${AUTO_CREATE_SCHEMA:-false}
       APP_ENV: ${APP_ENV:-development}
-      APP_VERSION: ${APP_VERSION:-0.5.0}
+      APP_VERSION: ${APP_VERSION:-0.7.0}
       APP_API_KEY: ${APP_API_KEY:-}
       AUTH_MODE: ${AUTH_MODE:-auto}
       JWT_SECRET: ${JWT_SECRET:-}
@@ -58,6 +58,16 @@ services:
       TOOL_CIRCUIT_FAILURE_THRESHOLD: ${TOOL_CIRCUIT_FAILURE_THRESHOLD:-5}
       TOOL_CIRCUIT_RECOVERY_SECONDS: ${TOOL_CIRCUIT_RECOVERY_SECONDS:-30}
       TOOL_EXECUTOR_MAX_WORKERS: ${TOOL_EXECUTOR_MAX_WORKERS:-8}
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-eat-agent}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      LANGFUSE_ENABLED: ${LANGFUSE_ENABLED:-false}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      LANGFUSE_CAPTURE_CONTENT: ${LANGFUSE_CAPTURE_CONTENT:-false}
+      LLM_INPUT_COST_PER_1K: ${LLM_INPUT_COST_PER_1K:-0}
+      LLM_OUTPUT_COST_PER_1K: ${LLM_OUTPUT_COST_PER_1K:-0}
     depends_on:
       postgres:
         condition: service_healthy

@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from config import settings
 from core.logging_config import configure_logging, fingerprint, log_event
+from core.observability import get_observation_context, record_tool_execution, start_span
 from rag.retriever import get_retriever_with_score
 from tavily import TavilyClient
 
@@ -217,28 +218,56 @@ class ToolRegistry:
         trace_id = str(uuid4())
         started_at = time.perf_counter()
         raw_context = dict(context or {})
+        parent_trace_id = raw_context.get("trace_id") or get_observation_context().trace_id
+        with start_span(
+            "tool.execute",
+            {
+                "tool.name": name,
+                "tool.caller": caller,
+                "tool.parent_trace_id": parent_trace_id,
+            },
+        ):
+            result = self._execute_result(name, query, raw_context, caller, trace_id)
+
+        result = result.model_copy(
+            update={"duration_ms": round((time.perf_counter() - started_at) * 1000, 2)}
+        )
+        record_tool_execution(
+            name,
+            result.status,
+            result.duration_ms,
+            error_code=result.error_code,
+            attempts=result.attempts,
+        )
+        self._audit(name, caller, raw_context, result, started_at, parent_trace_id=parent_trace_id)
+        return result
+
+    def _execute_result(
+        self,
+        name: str,
+        query: str,
+        raw_context: Mapping[str, Any],
+        caller: str,
+        trace_id: str,
+    ) -> ToolResult:
+        """Run policy, resilience, and handler logic without side effects for telemetry."""
+
         spec = self._specs.get(name)
         if spec is None:
-            result = ToolResult(status="tool_not_found", error_code="tool_not_found", trace_id=trace_id)
-            self._audit(name, caller, raw_context, result, started_at)
-            return result
+            return ToolResult(status="tool_not_found", error_code="tool_not_found", trace_id=trace_id)
 
         permission_error = self._check_permission(spec, caller, raw_context, trace_id)
         if permission_error is not None:
-            self._audit(name, caller, raw_context, permission_error, started_at)
             return permission_error
 
         payload = dict(raw_context)
         payload.setdefault("query", query or "")
         validation_error = self._validate_input(spec, payload, trace_id)
         if validation_error is not None:
-            self._audit(name, caller, raw_context, validation_error, started_at)
             return validation_error
 
         if not self._circuit_allows(name):
-            result = ToolResult(status="circuit_open", error_code="circuit_open", trace_id=trace_id)
-            self._audit(name, caller, raw_context, result, started_at)
-            return result
+            return ToolResult(status="circuit_open", error_code="circuit_open", trace_id=trace_id)
 
         handler = self._handlers[name]
         max_attempts = max(1, spec.max_attempts or 1)
@@ -272,11 +301,7 @@ class ToolRegistry:
             last_result = attempt_result
             if attempt_result.status == "success":
                 self._record_circuit_success(name)
-                final_result = attempt_result.model_copy(
-                    update={"duration_ms": round((time.perf_counter() - started_at) * 1000, 2)}
-                )
-                self._audit(name, caller, raw_context, final_result, started_at)
-                return final_result
+                return attempt_result
 
             if not self._should_retry(spec, attempt_result, attempt):
                 break
@@ -287,12 +312,9 @@ class ToolRegistry:
         assert last_result is not None
         if last_result.status not in {"validation_error", "permission_denied", "tool_not_found", "configuration_error"}:
             self._record_circuit_failure(name)
-        final_result = last_result.model_copy(
-            update={"duration_ms": round((time.perf_counter() - started_at) * 1000, 2)}
-        )
+        final_result = last_result
         if final_result.attempts > 1 and final_result.status in {"timeout", "tool_execution_failed", "error"}:
             final_result = final_result.model_copy(update={"status": "retry_exhausted"})
-        self._audit(name, caller, raw_context, final_result, started_at)
         return final_result
 
     def execute(
@@ -462,6 +484,8 @@ class ToolRegistry:
         context: Mapping[str, Any],
         result: ToolResult,
         started_at: float,
+        *,
+        parent_trace_id: str | None = None,
     ) -> None:
         log_event(
             self.logger,
@@ -472,6 +496,8 @@ class ToolRegistry:
             status=result.status,
             error_code=result.error_code,
             trace_id=result.trace_id,
+            tool_trace_id=result.trace_id,
+            parent_trace_id=parent_trace_id,
             request_id=context.get("request_id") or context.get("_request_id"),
             conversation_id=context.get("conversation_id") or context.get("_conversation_id"),
             user=fingerprint(str(context.get("user_id") or context.get("_user_id")))

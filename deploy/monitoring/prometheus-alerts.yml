@@ -1,0 +1,73 @@
+groups:
+  - name: eat-agent-p07
+    rules:
+      - alert: EatAgentHttp5xxRateHigh
+        expr: |
+          sum(rate(eat_agent_http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum(rate(eat_agent_http_requests_total[5m])), 1) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: eat-agent
+        annotations:
+          summary: "eat-agent HTTP 5xx rate is high"
+          description: "More than 5% of requests have returned 5xx for 10 minutes."
+
+      - alert: EatAgentWorkflowP95LatencyHigh
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(eat_agent_workflow_duration_seconds_bucket[5m]))
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+          service: eat-agent
+        annotations:
+          summary: "eat-agent workflow P95 latency is high"
+          description: "Workflow P95 latency is above 5 seconds for 10 minutes."
+
+      - alert: EatAgentToolFailureRateHigh
+        expr: |
+          sum(rate(eat_agent_tool_calls_total{status!="success"}[5m]))
+            / clamp_min(sum(rate(eat_agent_tool_calls_total[5m])), 1) > 0.20
+        for: 10m
+        labels:
+          severity: warning
+          service: eat-agent
+        annotations:
+          summary: "eat-agent tool failure rate is high"
+          description: "More than 20% of tool calls have failed for 10 minutes."
+
+      - alert: EatAgentToolCircuitOpen
+        expr: increase(eat_agent_tool_circuit_events_total{event="circuit_open"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: eat-agent
+        annotations:
+          summary: "eat-agent tool circuit breaker opened"
+          description: "At least one tool circuit breaker has opened in the last 5 minutes."
+
+      - alert: EatAgentLlmFallbackRateHigh
+        expr: |
+          sum(rate(eat_agent_llm_requests_total{outcome="fallback"}[10m]))
+            / clamp_min(sum(rate(eat_agent_llm_requests_total[10m])), 1) > 0.10
+        for: 10m
+        labels:
+          severity: warning
+          service: eat-agent
+        annotations:
+          summary: "eat-agent LLM fallback rate is high"
+          description: "More than 10% of LLM calls have used fallback for 10 minutes."
+
+      - alert: EatAgentReadinessFailed
+        expr: |
+          sum(increase(eat_agent_http_requests_total{path=~"/health/(ready|live)|/readyz|/healthz",status!="200"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: eat-agent
+        annotations:
+          summary: "eat-agent readiness endpoint is failing"
+          description: "The application health endpoint has returned a non-200 status."

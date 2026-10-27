@@ -10,6 +10,8 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
+from core.observability import observation_fields
+
 
 _SENSITIVE_KEY = re.compile(r"(password|token|secret|api[_-]?key|authorization|cookie)", re.IGNORECASE)
 _SENSITIVE_TEXT = re.compile(r"(?i)(bearer\s+)[^\s,}]+")
@@ -26,6 +28,7 @@ class JsonFormatter(logging.Formatter):
         event_data = getattr(record, "event_data", None)
         if isinstance(event_data, dict):
             payload.update(sanitize_mapping(event_data))
+        payload.update(observation_fields())
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 

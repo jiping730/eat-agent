@@ -2,7 +2,7 @@ replicaCount: 2
 
 image:
   repository: eat-agent
-  tag: p05
+  tag: p07
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -60,7 +60,7 @@ affinity: {}
 
 config:
   appEnv: production
-  appVersion: "0.5.0"
+  appVersion: "0.7.0"
   authMode: jwt
   jwtIssuer: eat-agent
   jwtAccessTtlMinutes: "30"
@@ -74,6 +74,14 @@ config:
   autoCreateSchema: "false"
   strictSecurity: "true"
   metricsEnabled: "true"
+  otelEnabled: "false"
+  otelServiceName: eat-agent
+  otelExporterOtlpEndpoint: ""
+  langfuseEnabled: "false"
+  langfuseHost: ""
+  langfuseCaptureContent: "false"
+  llmInputCostPer1k: "0"
+  llmOutputCostPer1k: "0"
 
 secrets:
   # Create this Secret outside Helm for production. Required keys:
@@ -87,6 +95,8 @@ secrets:
     zhipuaiApiKey: ""
     tavilyApiKey: ""
     appApiKey: ""
+    langfusePublicKey: ""
+    langfuseSecretKey: ""
 
 migration:
   enabled: true
