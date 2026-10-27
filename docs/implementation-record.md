@@ -17,6 +17,8 @@
 | P04 | 小型平台、JWT、Redis 和 Kubernetes 部署层 | `87715ca` | 已完成；详见 [P04 实施文档](p04-implementation.md) |
 | P05（历史分期） | 可观测性、CI、安全加固、备份恢复和交付验收 | `cddb506` | 已完成；详见 [P05 实施文档](p05-implementation.md)。不等同于主线 P0-5 |
 | P0-1～P0-4 补充（本轮） | 按主线收敛小型平台的统一边界、运行基础、会话治理和 FastAPI 接口 | 待提交 | 已实现并完成验收；明确暂缓企业级扩展 |
+| P1-0 | P1 公共基础准备：跨模块契约、模型路由指标和评测协议 | 待提交 | 已实现并完成验收；详见 [P1-0 实施文档](p1-0-implementation.md) |
+| P1-1 | 小型平台 RAG 检索质量升级 | 待提交 | 已实现并完成验收；详见 [P1-1 实施文档](p1-1-implementation.md) |
 
 实施时间：2026-10-27。
 
@@ -571,9 +573,44 @@ P0-8 严格按照 [项目实施主线](implementation-roadmap.md) 中的“测�
 
 本阶段仍不实现 CD 发布、镜像签名、生产制品仓库、多租户、OIDC/企业 SSO 和跨 Pod 共享熔断。
 
-## 13. 当前已知边界
+## 13. P1-1：RAG 检索质量升级实施记录
 
-本记录只记录已经实际完成的 Grill Engine、P01、P02、P03、P04、P05 和 P0-8，不把后续计划写成已完成能力。
+本阶段严格按照主线中的 `P1-1：升级 RAG 检索质量` 实施，目标是在不引入 Qdrant、任务队列或在线管理后台的前提下，让小型平台拥有可重复构建、可回滚、可解释和可评测的本地知识库检索链路。
+
+### 13.1 文档入库和版本治理
+
+- 新增 `rag/ingestion.py` 和 `python -m rag.ingestion` CLI，支持读取 `.txt` 文档、BOM/空白/换行清洗、段落与长文本切分、内容去重和访问组元数据。
+- 每个文档片段携带 `document_id`、`content_hash`、`version`、`chunk_id`、标题、源文件和 `access_groups`，便于来源追踪和后续权限策略接入。
+- 版本写入 `versions/<version>/manifest.json` 与 `corpus.json`，通过 `current.json` 原子切换当前版本；发布前后保留历史版本，支持 `rollback_version()` 回滚。
+- 访问组可通过 CLI 重复传入 `--access-group`，未指定时默认为 `public`。
+
+### 13.2 检索、重排和工具接入
+
+- `rag/retriever.py` 增加确定性查询改写，统一全角文本并处理卡路里/热量、减脂/减肥、减重/减肥等同义词。
+- 增加纯 Python BM25 风格词法召回，和既有 FAISS 相似度召回合并；FAISS 不可用或尚未构建时，词法召回仍可工作。
+- 增加轻量确定性重排器，按查询词覆盖率、短语命中和标题命中修正多路召回结果。重排逻辑独立，未来可以替换为 BGE/Cohere，不改变上层协议。
+- 在召回前执行 `access_groups` 过滤，结果增加 `retrieval_score`、`retrieval_method`、`query_rewrite`、`rerank_score` 和 `rerank_method`。
+- `retrieve_with_contract()` 返回 `RetrievalResponse`、`RetrievedDocument` 和 `SourceRef`；Tool Registry 继续保留旧纯文本 API，同时向工具结果暴露来源、版本、片段和分数。
+
+### 13.3 黄金评测和测试
+
+- 新增 `evaluation/rag_cases.json`，覆盖来源证据、查询改写、多路召回和过敏原安全主题。
+- 新增 `test_p1_rag.py`，覆盖清洗去重、版本发布回滚、权限过滤、查询改写、向量兼容、重排元数据和结构化来源。
+- 新增 `test_p1_rag_eval.py`，用黄金集验证目标来源进入 Top-K，避免只验证“有结果”而不验证“结果正确”。
+- `.github/workflows/ci.yml` 将 `rag/ingestion.py`、`rag/retriever.py` 纳入 Black、isort 和 Mypy；Ruff 继续扫描整个 RAG 包。
+
+### 13.4 P1-1 验收记录
+
+```text
+P1-1 专项与公共契约测试：11 passed
+Python 3.12 容器环境执行，RAG 词法/向量兼容和黄金来源断言通过
+```
+
+本阶段没有引入 `rank_bm25`、Qdrant、pgvector、在线 Reranker 或异步索引队列；这些能力会在数据规模和部署形态明确后再增加，避免偏离小型平台目标。
+
+## 14. 当前已知边界
+
+本记录只记录已经实际完成的 Grill Engine、P01、P02、P03、P04、P05、P0-8、P1-0 和 P1-1，不把后续计划写成已完成能力。
 
 当前仍有以下边界：
 

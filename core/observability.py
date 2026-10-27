@@ -18,7 +18,6 @@ from uuid import uuid4
 
 from prometheus_client import Counter, Gauge, Histogram
 
-
 # HTTP and conversation metrics that existed before P0-7.
 HTTP_REQUESTS = Counter(
     "eat_agent_http_requests_total",
@@ -122,6 +121,11 @@ LLM_COST = Counter(
     "Estimated LLM cost in configured currency units.",
     ("model",),
 )
+MODEL_ROUTES = Counter(
+    "eat_agent_model_routes_total",
+    "Model gateway routes grouped by task, provider, model, and outcome.",
+    ("task", "provider", "model", "route"),
+)
 RAG_REQUESTS = Counter(
     "eat_agent_rag_requests_total",
     "RAG calls grouped by status and hit state.",
@@ -212,7 +216,9 @@ def record_workflow(intent: str | None, status: str, elapsed: float) -> None:
     WORKFLOW_DURATION.labels(intent=normalized_intent).observe(max(0.0, elapsed))
 
 
-def record_grill_decision(action: str, target_field: str | None, *, intent: str | None = None, reason: str | None = None) -> None:
+def record_grill_decision(
+    action: str, target_field: str | None, *, intent: str | None = None, reason: str | None = None
+) -> None:
     GRILL_DECISIONS.labels(action=action or "unknown", target_field=target_field or "none").inc()
     if reason:
         GRILL_ISSUES.labels(intent=intent or "unknown", reason=reason).inc()
@@ -260,6 +266,17 @@ def record_llm_call(
         LLM_TOKENS.labels(model=normalized_model, direction="output").inc(max(0, output_tokens))
     if cost is not None and cost >= 0:
         LLM_COST.labels(model=normalized_model).inc(cost)
+
+
+def record_model_route(task: str, provider: str, model: str, route: str) -> None:
+    """Record a bounded model-routing decision without prompt content."""
+
+    MODEL_ROUTES.labels(
+        task=task or "unknown",
+        provider=provider or "unknown",
+        model=model or "unknown",
+        route=route or "unknown",
+    ).inc()
 
 
 def record_rag_retrieval(status: str, hit: bool, elapsed: float, document_count: int = 0) -> None:

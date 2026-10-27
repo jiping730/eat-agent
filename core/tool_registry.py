@@ -14,19 +14,19 @@ import random
 import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
+from tavily import TavilyClient
 
 from config import settings
 from core.logging_config import configure_logging, fingerprint, log_event
 from core.observability import get_observation_context, record_tool_execution, start_span
 from rag.retriever import get_retriever_with_score
-from tavily import TavilyClient
-
 
 TOOL_STATUSES = {
     "success",
@@ -229,9 +229,7 @@ class ToolRegistry:
         ):
             result = self._execute_result(name, query, raw_context, caller, trace_id)
 
-        result = result.model_copy(
-            update={"duration_ms": round((time.perf_counter() - started_at) * 1000, 2)}
-        )
+        result = result.model_copy(update={"duration_ms": round((time.perf_counter() - started_at) * 1000, 2)})
         record_tool_execution(
             name,
             result.status,
@@ -500,9 +498,11 @@ class ToolRegistry:
             parent_trace_id=parent_trace_id,
             request_id=context.get("request_id") or context.get("_request_id"),
             conversation_id=context.get("conversation_id") or context.get("_conversation_id"),
-            user=fingerprint(str(context.get("user_id") or context.get("_user_id")))
-            if context.get("user_id") or context.get("_user_id")
-            else None,
+            user=(
+                fingerprint(str(context.get("user_id") or context.get("_user_id")))
+                if context.get("user_id") or context.get("_user_id")
+                else None
+            ),
             attempts=result.attempts,
             duration_ms=result.duration_ms or round((time.perf_counter() - started_at) * 1000, 2),
             source_count=len(result.sources),
@@ -524,11 +524,16 @@ def tool_error_message(result: ToolResult) -> str:
     return messages.get(result.status, "工具暂时不可用，请稍后重试。")
 
 
-def retrieve_knowledge_result(query: str, *, score_threshold: float = 2.0) -> ToolResult:
+def retrieve_knowledge_result(
+    query: str,
+    *,
+    score_threshold: float = 2.0,
+    access_groups: set[str] | None = None,
+) -> ToolResult:
     """Run local retrieval and preserve document provenance."""
 
     try:
-        retriever = get_retriever_with_score(score_threshold=score_threshold)
+        retriever = get_retriever_with_score(score_threshold=score_threshold, access_groups=access_groups)
         docs = retriever(query)
     except Exception as exc:
         raise ToolTransientError("知识库暂时不可用") from exc
@@ -540,7 +545,17 @@ def retrieve_knowledge_result(query: str, *, score_threshold: float = 2.0) -> To
     for doc in docs:
         metadata = getattr(doc, "metadata", {}) or {}
         source = metadata.get("source") or metadata.get("file_path") or "local_knowledge_base"
-        sources.append({"type": "knowledge_base", "source": str(source)})
+        sources.append(
+            {
+                "type": "knowledge_base",
+                "source": str(source),
+                "title": metadata.get("title"),
+                "document_id": metadata.get("document_id"),
+                "version": metadata.get("version"),
+                "chunk_id": metadata.get("chunk_id"),
+                "score": metadata.get("retrieval_score"),
+            }
+        )
     return ToolResult(
         status="success",
         data="\n\n".join(doc.page_content for doc in docs),
@@ -598,8 +613,9 @@ def search_web(query: str) -> str:
     return result.text if result.status == "success" else tool_error_message(result)
 
 
-def _retrieval_handler(query: str, _: Mapping[str, Any]) -> ToolResult:
-    return retrieve_knowledge_result(query)
+def _retrieval_handler(query: str, context: Mapping[str, Any]) -> ToolResult:
+    access_groups = context.get("access_groups")
+    return retrieve_knowledge_result(query, access_groups=set(access_groups) if access_groups else None)
 
 
 def _calorie_handler(query: str, context: Mapping[str, Any]) -> ToolResult:
@@ -616,7 +632,8 @@ def _calorie_handler(query: str, context: Mapping[str, Any]) -> ToolResult:
             ),
             sources=[{"type": "offline", "source": "local_fallback"}],
         )
-    return retrieve_knowledge_result(query)
+    access_groups = context.get("access_groups")
+    return retrieve_knowledge_result(query, access_groups=set(access_groups) if access_groups else None)
 
 
 def _meal_planner_handler(_: str, context: Mapping[str, Any]) -> ToolResult:

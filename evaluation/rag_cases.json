@@ -1,0 +1,31 @@
+[
+  {
+    "case_id": "rag-protein-source",
+    "question": "鸡胸肉的蛋白质来源是什么？",
+    "expected_domain": "nutrition",
+    "expected_sources": ["nutrition/protein.txt"],
+    "tags": ["lexical", "evidence"]
+  },
+  {
+    "case_id": "rag-calorie-synonym",
+    "question": "鸡胸肉的卡路里是多少？",
+    "expected_domain": "nutrition",
+    "expected_sources": ["nutrition/calorie.txt"],
+    "tags": ["query-rewrite", "synonym"]
+  },
+  {
+    "case_id": "rag-weight-loss-synonym",
+    "question": "减重期间应该怎么安排饮食？",
+    "expected_domain": "nutrition",
+    "expected_sources": ["nutrition/weight-loss.txt"],
+    "tags": ["query-rewrite", "multi-route"]
+  },
+  {
+    "case_id": "rag-allergen-safety",
+    "question": "花生过敏时应该注意什么？",
+    "expected_domain": "safety",
+    "expected_sources": ["safety/allergens.txt"],
+    "must_not_execute": true,
+    "tags": ["safety", "evidence"]
+  }
+]

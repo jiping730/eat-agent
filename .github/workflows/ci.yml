@@ -43,11 +43,11 @@ jobs:
       - name: Ruff
         run: ruff check core front agent rag mcp_servers utils --exclude '*.pyc'
       - name: Black
-        run: black --check core/intent_router.py core/workflow.py core/conversation_runtime.py
+        run: black --check core/contracts.py core/intent_router.py core/workflow.py core/conversation_runtime.py rag/ingestion.py rag/retriever.py
       - name: isort
-        run: isort --check-only core/intent_router.py core/conversation_runtime.py
+        run: isort --check-only core/contracts.py core/intent_router.py core/conversation_runtime.py rag/ingestion.py rag/retriever.py
       - name: Mypy
-        run: mypy core/intent_router.py core/grill_engine.py core/conversation_runtime.py
+        run: mypy core/contracts.py core/intent_router.py core/grill_engine.py core/conversation_runtime.py rag/ingestion.py rag/retriever.py
 
   browser-e2e:
     runs-on: ubuntu-latest
