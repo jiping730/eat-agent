@@ -7,6 +7,16 @@
   "confirmation_required": false,
   "confidence_threshold": 0.75,
   "refusal_policy": "fallback",
+  "operations": {
+    "advice": {
+      "requires_grill": false,
+      "required_fields": []
+    },
+    "plan": {
+      "requires_grill": true,
+      "required_fields": ["meal_type", "allergy_info"]
+    }
+  },
   "fields": [
     {
       "name": "meal_type",

@@ -22,6 +22,7 @@ FieldType = Literal["enum", "number", "date", "text", "boolean"]
 FieldSource = Literal["user", "inferred", "preference", "default", "refused"]
 GrillAction = Literal[
     "execute",
+    "advise",
     "clarify",
     "offer_candidates",
     "pending_confirmation",
@@ -96,6 +97,13 @@ class FieldSpec(BaseModel):
     refusal_allowed: bool = False
 
 
+class OperationSpec(BaseModel):
+    """Operation-specific Grill policy for one task profile."""
+
+    requires_grill: bool = True
+    required_fields: list[str] = Field(default_factory=list)
+
+
 class TaskProfile(BaseModel):
     task_type: str
     version: str = "1.0"
@@ -108,6 +116,7 @@ class TaskProfile(BaseModel):
     refusal_policy: Literal["fallback", "reject", "default"] = "fallback"
     dependencies: list[DependencyRule] = Field(default_factory=list)
     conflicts: list[ConflictRule] = Field(default_factory=list)
+    operations: dict[str, OperationSpec] = Field(default_factory=dict)
 
     def field(self, name: str | None) -> FieldSpec | None:
         if not name:
@@ -133,6 +142,10 @@ class GrillContext(BaseModel):
     refused_fields: list[str] = Field(default_factory=list)
     task_queue: list[str] = Field(default_factory=list)
     active_task: str | None = None
+    domain: str | None = None
+    operation: str | None = None
+    goal: str | None = None
+    intent_payload: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
     def from_value(cls, value: Any) -> "GrillContext":
@@ -149,6 +162,7 @@ class GrillResult(BaseModel):
     schema_version: str = "1.0"
     action: GrillAction
     task: str | None = None
+    operation: str | None = None
     profile_version: str | None = None
     message: str | None = None
     question: str | None = None
@@ -437,6 +451,7 @@ class GrillEngine:
         context: dict[str, Any] | GrillContext | None = None,
         *,
         current_intent: str | None = None,
+        operation: str | None = None,
     ) -> GrillResult:
         ctx = GrillContext.from_value(context)
         switched_from: str | None = None
@@ -458,6 +473,13 @@ class GrillEngine:
             ctx.intent = profile.task_type
         ctx.profile_version = profile.version
         ctx.active_task = profile.task_type
+        ctx.operation = operation or ctx.operation
+
+        operation_spec = profile.operations.get(operation) if operation else None
+        if operation_spec and not operation_spec.requires_grill:
+            ctx.status = "completed"
+            ctx.pending_field = None
+            return self._result(profile, ctx, action="advise", reason="operation_does_not_require_grill")
         for field in profile.fields:
             if field.name in ctx.fields and field.name not in ctx.field_states:
                 self._store_value(
@@ -525,7 +547,7 @@ class GrillEngine:
             if extraction.value is not None and (field.name not in ctx.fields or pending_field == field.name):
                 self._store_value(ctx, field, extraction.value, "user", extraction.confidence, extraction.evidence)
 
-        required_fields = self._required_fields(profile, ctx)
+        required_fields = self._required_fields(profile, ctx, operation=operation)
         missing_required = [field for field in required_fields if not self._exists(ctx.fields.get(field.name))]
         if missing_required:
             if ctx.total_rounds > profile.max_total_rounds:
@@ -590,8 +612,18 @@ class GrillEngine:
         ctx.field_states[field.name] = FieldState(source=source, confidence=confidence, evidence=evidence)
 
     @staticmethod
-    def _required_fields(profile: TaskProfile, ctx: GrillContext) -> list[FieldSpec]:
-        required_names = [field.name for field in profile.fields if field.priority == "critical"]
+    def _required_fields(
+        profile: TaskProfile,
+        ctx: GrillContext,
+        *,
+        operation: str | None = None,
+    ) -> list[FieldSpec]:
+        operation_spec = profile.operations.get(operation) if operation else None
+        required_names = (
+            list(operation_spec.required_fields)
+            if operation_spec is not None and operation_spec.required_fields
+            else [field.name for field in profile.fields if field.priority == "critical"]
+        )
         for rule in profile.dependencies:
             if GrillEngine._matches_when(rule.when, ctx.fields):
                 for name in rule.require:
@@ -742,6 +774,7 @@ class GrillEngine:
         return GrillResult(
             action=action,
             task=profile.task_type,
+            operation=ctx.operation,
             profile_version=profile.version,
             context=ctx,
             task_queue=ctx.task_queue,
@@ -751,7 +784,7 @@ class GrillEngine:
     @staticmethod
     def _context_confidence(profile: TaskProfile, ctx: GrillContext) -> float:
         values: list[float] = []
-        for field in GrillEngine._required_fields(profile, ctx):
+        for field in GrillEngine._required_fields(profile, ctx, operation=ctx.operation):
             state = ctx.field_states.get(field.name)
             if state:
                 values.append(state.confidence)

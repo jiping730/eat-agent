@@ -152,6 +152,8 @@ class ConversationRuntime:
             "user_id": user_id,
             "memory_context": [],
             "current_goal": snapshot.current_goal or "",
+            "current_operation": (snapshot.grill_context or {}).get("operation", "answer"),
+            "request_intent": (snapshot.grill_context or {}).get("intent_payload", {}),
             "plan": [],
             "tool_outputs": {},
             "reflection": "",
@@ -210,6 +212,7 @@ class ConversationRuntime:
             self.memory_mgr.add_interaction(question, answer, user_id)
 
         response_type = {
+            "advise": "advice",
             "clarify": "clarification",
             "fallback": "clarification",
             "pending_confirmation": "confirmation",

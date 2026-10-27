@@ -7,7 +7,8 @@ from core.logging_config import configure_logging, log_event
 from core.observability import record_fallback, start_span
 from utils.llm import get_llm
 from config import settings
-from core.grill_engine import GrillEngine, field_label, get_profile
+from core.grill_engine import GrillContext, GrillEngine, field_label, get_profile
+from core.intent_router import classify_request
 from core.tool_registry import ToolRegistry, ToolResult, build_default_tool_registry, tool_error_message
 
 # 定义状态
@@ -16,6 +17,8 @@ class AgentState(TypedDict):
     user_id: str                                               # 用户标识
     memory_context: List[str]                                  # 记忆检索结果
     current_goal: str                                          # 当前目标
+    current_operation: str                                     # 当前操作模式
+    request_intent: Dict[str, Any]                              # 结构化请求意图
     plan: List[str]                                            # 执行计划
     tool_outputs: Dict[str, Any]                               # 工具输出缓存
     reflection: str                                             # 反思结果
@@ -56,84 +59,23 @@ def create_workflow(
 
     # 定义节点函数
     def understand_intent(state: AgentState) -> AgentState:
-        try:
-            last_msg = state["messages"][-1]["content"]
-
-            # 用户正在回答 Grill 的问题时，沿用原任务意图，避免把
-            # “没有忌口”“晚餐”等回答误判成 general/followup。
-            grill_context = state.get("grill_context", {}) or {}
-            if grill_context.get("pending_field") and grill_context.get("intent"):
-                pending_intent = grill_context["intent"]
-                starts_new_calorie_query = pending_intent == "meal_planner" and any(
-                    word in last_msg for word in ["热量", "卡路里", "多少卡"]
-                )
-                starts_new_meal_plan = pending_intent == "calorie_query" and any(
-                    word in last_msg for word in ["安排", "推荐", "搭配", "食谱", "餐食"]
-                )
-                if starts_new_calorie_query:
-                    state["current_goal"] = "calorie_query"
-                    return state
-                elif starts_new_meal_plan:
-                    state["current_goal"] = "meal_planner"
-                    return state
-                else:
-                    state["current_goal"] = pending_intent
-                    return state
-
-            # 常见营养场景先走确定性识别，只有无法判断时才调用 LLM。
-            if any(word in last_msg for word in ["热量", "卡路里", "多少卡"]):
-                state["current_goal"] = "calorie_query"
-                return state
-            if any(word in last_msg for word in ["搜索", "查一下", "最新", "网上", "新闻"]):
-                state["current_goal"] = "web_search"
-                return state
-            if any(word in last_msg for word in ["减肥", "减脂", "控制体重", "增肌", "饮食目标", "健康饮食"]):
-                state["current_goal"] = "meal_planner"
-                return state
-            if any(word in last_msg for word in ["吃", "餐", "菜", "搭配", "食谱", "餐食"]):
-                state["current_goal"] = "meal_planner"
-                return state
-
-            context_messages = state["messages"][-3:]
-            context_str = "\n".join(
-                [f"{'用户' if m['role'] == 'user' else '助手'}: {m['content']}" for m in context_messages]
-            )
-
-            llm = get_llm()
-            prompt = f"""请根据对话历史判断当前用户输入属于以下哪一类：
-- calorie_query: 用户询问食物的热量、卡路里等
-- meal_planner: 用户要求推荐餐食、搭配、组合等
-- followup: 用户使用代词（如“这个”、“它”、“那个”）或进行追问（如“有没有低卡的”、“晚上吃”），通常需要结合上一轮回答
-- web_search: 用户需要实时信息、网络搜索、最新资讯、或明确要求查询网上内容（如“搜索”、“查一下”、“网上说”）
-- general: 其他情况
-
-对话历史：
-{context_str}
-
-当前用户输入：{last_msg}
-
-只返回类别名称（如 calorie_query），不要输出其他内容。"""
-
-            intent = llm.invoke(prompt).strip().lower()
-            if " " in intent:
-                intent = intent.split()[0]
-            if intent in ["calorie_query", "meal_planner", "followup", "web_search"]:
-                state["current_goal"] = intent
-            else:
-                state["current_goal"] = "general"
-
-            log_event(logger, 20, "intent_detected", intent=state["current_goal"])
-        except Exception as e:
-            log_event(logger, 40, "intent_detection_failed", error_type=type(e).__name__)
-            # 回退关键词匹配
-            if "热量" in last_msg:
-                state["current_goal"] = "calorie_query"
-            elif "餐" in last_msg or "搭配" in last_msg:
-                state["current_goal"] = "meal_planner"
-            elif "搜索" in last_msg or "查一下" in last_msg or "最新" in last_msg or "网上" in last_msg:
-                state["current_goal"] = "web_search"
-            else:
-                state["current_goal"] = "general"
+        last_msg = state["messages"][-1]["content"]
+        request = classify_request(last_msg, state.get("grill_context", {}) or {})
+        state["request_intent"] = request.model_dump(mode="json")
+        state["current_operation"] = request.operation
+        # current_goal remains the compatibility/task key used by tools,
+        # metrics, and the existing persistence schema.
+        state["current_goal"] = request.task or "general"
+        log_event(
+            logger,
+            20,
+            "intent_detected",
+            domain=request.domain,
+            operation=request.operation,
+            task=request.task or "general",
+            goal=request.goal,
+            continuation=request.continuation,
+        )
         return state
 
     def retrieve_memory(state: AgentState) -> AgentState:
@@ -154,9 +96,39 @@ def create_workflow(
         """阻止信息不足的任务进入工具执行阶段。"""
         try:
             intent = state.get("current_goal", "general")
+            operation = state.get("current_operation", "answer") or "answer"
+            request_intent = state.get("request_intent", {}) or {}
+
+            # Advice and ordinary answers are conversational responses, not
+            # structured tasks.  Never ask a task profile's required fields
+            # for these operations.
+            if operation in {"advice", "answer"}:
+                context = GrillContext(
+                    status="completed",
+                    intent=request_intent.get("task") or request_intent.get("domain") or "general",
+                    domain=request_intent.get("domain"),
+                    operation=operation,
+                    goal=request_intent.get("goal"),
+                    intent_payload=request_intent,
+                )
+                state["grill_context"] = context.model_dump(mode="json")
+                state["grill_result"] = {
+                    "action": "advise" if operation == "advice" else "answer",
+                    "task": request_intent.get("task"),
+                    "operation": operation,
+                    "context": state["grill_context"],
+                    "reason": "direct_advice" if operation == "advice" else "direct_answer",
+                }
+                state["followup"] = False
+                return state
+
             profile = get_profile(intent)
             if profile is None:
-                state["grill_result"] = {"action": "execute"}
+                state["grill_result"] = {
+                    "action": "execute",
+                    "task": intent if intent != "general" else None,
+                    "operation": operation,
+                }
                 return state
 
             with start_span(
@@ -171,7 +143,12 @@ def create_workflow(
                     state["messages"][-1]["content"],
                     state.get("grill_context", {}),
                     current_intent=intent,
+                    operation=operation,
                 )
+            result.context.domain = request_intent.get("domain")
+            result.context.operation = operation
+            result.context.goal = request_intent.get("goal")
+            result.context.intent_payload = request_intent
             state["grill_context"] = result.context.model_dump(mode="json")
             state["grill_result"] = result.to_dict()
             if result.action in {"clarify", "fallback", "pending_confirmation", "reject", "switch", "multi_task"}:
@@ -182,6 +159,7 @@ def create_workflow(
                 20,
                 "grill_decision",
                 intent=intent,
+                operation=operation,
                 action=result.action,
                 reason=result.reason,
                 target_field=result.target_field,
@@ -217,6 +195,11 @@ def create_workflow(
                 last_assistant_msg = state["messages"][-2]["content"]
 
             grill_action = state.get("grill_result", {}).get("action")
+
+            if state.get("current_operation") in {"advice", "answer"}:
+                state["plan"] = []
+                state["followup"] = False
+                return state
 
             # Grill 已判定信息足够时优先执行，不能被“没有/晚餐”等回答
             # 关键词再次误判为普通 followup。
@@ -272,6 +255,8 @@ def create_workflow(
 
             execution_context = dict(state.get("grill_context", {}) or {})
             execution_context["intent"] = state.get("current_goal")
+            execution_context["operation"] = state.get("current_operation")
+            execution_context["request_intent"] = state.get("request_intent", {})
             execution_context["request_id"] = state.get("request_id")
             execution_context["conversation_id"] = state.get("conversation_id")
             execution_context["trace_id"] = state.get("trace_id")
@@ -314,6 +299,8 @@ def create_workflow(
         history_text = "\n".join(history_lines)
 
         current_question = state["messages"][-1]["content"]
+        request_intent = state.get("request_intent", {}) or {}
+        operation = state.get("current_operation", "answer") or "answer"
 
         # 工具失败不能被当成正常业务数据继续交给 LLM 生成确定性答案。
         # 保留统一的安全提示，同时让调用方通过 tool_results 获取具体状态。
@@ -367,9 +354,14 @@ def create_workflow(
                 "memory": state["memory_context"],
                 "tool_outputs": state["tool_outputs"],
                 "grill_context": state.get("grill_context", {}),
+                "request_intent": request_intent,
                 "graph_rag": graph_rag.search(current_question) if graph_rag else None
             }
             prompt = f"""请根据以下对话历史和相关上下文回答用户当前问题。
+
+请求路由：领域={request_intent.get('domain', 'general')}，操作={operation}，目标={request_intent.get('goal') or '未明确'}。
+如果操作是 advice，只提供与目标相关的通用建议，不要追问餐次、忌口等餐单参数，也不要擅自把目标改写成制定餐单。
+如果操作是 plan，只有在用户明确要求制定方案时才给出方案；如果平台没有对应的专用工具，给出可执行的通用方案并说明边界。
 
 对话历史：
 {history_text}
@@ -386,7 +378,20 @@ def create_workflow(
             log_event(logger, 30, "llm_answer_fallback", error_type=type(exc).__name__)
             record_fallback("llm_error")
             grill_fields = state.get("grill_context", {}).get("fields", {})
-            if state.get("current_goal") == "meal_planner":
+            if operation == "advice":
+                if request_intent.get("domain") == "nutrition" and request_intent.get("goal") == "weight_control":
+                    answer = (
+                        "如果目标是减脂，先从可持续的热量控制开始：每餐保证适量蛋白质，增加蔬菜和高纤维主食，"
+                        "减少含糖饮料、油炸和高热量零食；不要极端节食，并结合规律睡眠和适度运动。"
+                        "如果你愿意，我还可以继续为你制定具体餐单。"
+                    )
+                elif request_intent.get("domain") == "nutrition":
+                    answer = "建议先明确你的饮食目标，再从均衡摄入、适量蛋白质、足量蔬菜和控制高糖高油食物开始，逐步调整更容易坚持。"
+                else:
+                    answer = "可以先明确目标和当前情况，再拆成几个可执行的小步骤，设定一个容易坚持的节奏，并根据结果逐步调整。"
+            elif operation == "plan" and state.get("current_goal") != "meal_planner":
+                answer = "可以制定方案。请告诉我你希望达成的目标、当前情况和主要限制条件，我会据此拆解步骤。"
+            elif state.get("current_goal") == "meal_planner":
                 profile = get_profile("meal_planner")
 
                 def display_field(name: str, fallback: str) -> str:

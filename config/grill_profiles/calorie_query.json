@@ -7,6 +7,16 @@
   "confirmation_required": false,
   "confidence_threshold": 0.75,
   "refusal_policy": "fallback",
+  "operations": {
+    "lookup": {
+      "requires_grill": true,
+      "required_fields": ["food"]
+    },
+    "calculate": {
+      "requires_grill": true,
+      "required_fields": ["food"]
+    }
+  },
   "fields": [
     {
       "name": "food",
