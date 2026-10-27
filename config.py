@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     jwt_issuer: str = "eat-agent"
     jwt_access_ttl_minutes: int = 30
     jwt_refresh_ttl_days: int = 30
+    conversation_ttl_days: int = 30
     redis_url: Optional[str] = None
     redis_lock_timeout_seconds: int = 30
     strict_security: bool = False

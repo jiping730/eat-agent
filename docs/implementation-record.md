@@ -1,6 +1,8 @@
 # 项目实施记录
 
-> 本文记录已经实际完成并提交到 Git 的工作，不是未来规划清单。
+> 本文记录已经实际实施的工作，不是未来规划清单；已提交内容和当前工作区待提交的补充会明确区分。
+>
+> 后续开发以 [项目实施主线与优先级清单](implementation-roadmap.md) 为唯一基线；本文只记录实际完成情况。
 
 ## 1. 记录范围
 
@@ -13,9 +15,10 @@
 | P02 | 完成配置、依赖、Docker、离线降级和运行验收 | `d232d9c` | 已完成 |
 | P03 | 持久化会话、生产运行加固和安全验收 | `b535778` | 已完成；详见 [P03 实施文档](p03-implementation.md) |
 | P04 | 小型平台、JWT、Redis 和 Kubernetes 部署层 | `87715ca` | 已完成；详见 [P04 实施文档](p04-implementation.md) |
-| P05 | 可观测性、CI、安全加固、备份恢复和交付验收 | 本次交付提交 | 已完成；详见 [P05 实施文档](p05-implementation.md) |
+| P05（历史分期） | 可观测性、CI、安全加固、备份恢复和交付验收 | `cddb506` | 已完成；详见 [P05 实施文档](p05-implementation.md)。不等同于主线 P0-5 |
+| P0-1～P0-4 补充（本轮） | 按主线收敛小型平台的统一边界、运行基础、会话治理和 FastAPI 接口 | 待提交 | 已实现并完成验收；明确暂缓企业级扩展 |
 
-实施时间：2026-10-26。
+实施时间：2026-10-27。
 
 ## 2. Grill Engine：追问能力落地
 
@@ -427,7 +430,54 @@ Helm：lint/render 成功
 Kubernetes：本机未启用，仅完成静态验收
 ```
 
-## 9. 当前已知边界
+## 9. P0-1～P0-4：小型平台补充实施记录（本轮）
+
+本轮严格以 [项目实施主线与优先级清单](implementation-roadmap.md) 为基线，目标是让小型平台闭环可运行、可测试、可浏览器验收。以下改动已经写入工作区，当前尚未创建新的 Git 提交。
+
+### 9.1 P0-1：统一 Agent 边界补充
+
+- `core/tool_registry.py` 增加 `ToolResult`、`ToolSpec` 和统一 `execute_result()`，标准化工具状态、来源、错误码和 `trace_id`。
+- `core/workflow.py` 改为使用标准工具结果，工具异常不会把 Python 异常细节直接返回给用户。
+- `mcp_servers/local_server.py`、`core/skills/*/skill.py` 和旧 `agent/tools.py` 复用同一 Tool Registry 实现。
+- CLI、Web、兼容 `WorkflowAgentExecutor` 继续通过 `ConversationRuntime` 进入同一 LangGraph Workflow。
+
+### 9.2 P0-2：运行基础补充
+
+- `config.py`、`.env.example` 和 Compose 增加 `CONVERSATION_TTL_DAYS` 等统一配置。
+- `pyproject.toml` 补齐 FastAPI、Uvicorn、Jinja2、Werkzeug 等声明，并生成 `uv.lock`；开发测试依赖保持在 `dev` extra。
+- `front/app.py` 运行入口改为 FastAPI/Uvicorn，Docker/Gunicorn 使用 `UvicornWorker`。
+- 最终镜像仍使用既定标签 `eat-agent:p05`，不引入新的阶段命名，Compose 依赖 PostgreSQL 和 Redis 健康状态启动。
+
+### 9.3 P0-3：会话治理补充
+
+- `ConversationRecord` 增加 `expires_at`，列表、读取和写入都会阻止过期会话继续使用。
+- 新增 `migrations/versions/0003_conversation_expiry.py`，为已有会话补齐默认 30 天过期时间并建立索引。
+- 新增会话永久删除能力，删除消息和幂等记录；原有归档能力保留。
+- 针对 SQLite 不保留时区信息的情况增加 UTC 归一化，保证本地测试和 PostgreSQL 行为一致。
+- 按既定小型平台边界，租户、官方 LangGraph PostgreSQL Checkpointer 暂缓到 P2。
+
+### 9.4 P0-4：FastAPI 和接口契约补充
+
+- 新增 `front/schemas.py`，定义认证、会话、`/ask`、错误和 Token 的 Pydantic Schema。
+- `front/app.py` 完成 FastAPI 路由、统一错误码、请求 ID、限流、CORS、JWT/API Key 认证、健康检查和指标接口。
+- 保留 `/healthz`、`/readyz` 兼容路径，同时提供 `/health/live`、`/health/ready`。
+- 生产 JWT 模式下用户身份来自 Token；开发模式保留 `X-User-ID` 兼容方式，OIDC/企业 SSO 和租户权限暂缓到 P2。
+- 修复 FastAPI 模板中 Flask `url_for` 静态资源调用，改为 `/static/...`；给脚本增加版本参数，避免浏览器继续使用旧缓存。
+
+### 9.5 本轮自动化与容器验收
+
+```text
+compileall：通过
+全量 pytest：30 passed，1 个 Starlette 弃用警告
+Docker Compose：PostgreSQL、Redis、eat-agent 均 healthy
+Alembic：0001 → 0002 → 0003 成功执行
+镜像：eat-agent:p05，应用以非 root 用户运行
+浏览器：信息不足 → 餐次候选 → 忌口追问 → 最终回答 → 刷新后历史恢复
+```
+
+本轮没有引入或验收以下能力：多租户 `tenant_id`、OIDC/企业 SSO、官方 LangGraph PostgreSQL Checkpointer、按租户加载 Grill Profile。
+
+## 10. 当前已知边界
 
 本记录只记录已经实际完成的 Grill Engine、P01、P02、P03、P04 和 P05，不把后续计划写成已完成能力。
 

@@ -9,53 +9,37 @@ import asyncio
 import json
 from mcp.server import Server, stdio_server
 from mcp.types import TextContent, Tool
-from core.tool_registry import retrieve_knowledge
+from core.tool_registry import ToolRegistry, build_default_tool_registry
 # 创建服务器实例
 server = Server("nutrition-local-server")
+tool_registry: ToolRegistry = build_default_tool_registry()
 
 
 @server.list_tools()
 async def handle_list_tools() -> list[Tool]:
     return [
-        Tool(
-            name="calorie_query",
-            description="查询食物的热量，输入食物名称，返回每100克的热量",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "food": {"type": "string", "description": "食物名称，如鸡胸肉"}
-                },
-                "required": ["food"]
-            }
-        ),
-        Tool(
-            name="meal_planner",
-            description="根据热量目标推荐餐食组合",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "calories": {"type": "integer", "description": "目标热量，如500"},
-                    "meal_type": {"type": "string", "enum": ["早餐", "午餐", "晚餐"]}
-                },
-                "required": ["calories", "meal_type"]
-            }
-        )
+        Tool(name=spec.name, description=spec.description, inputSchema=spec.input_schema)
+        for spec in tool_registry.specs
+        if spec.name in {"calorie_query", "meal_planner"}
     ]
 
 
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
     if name == "calorie_query":
-        food = arguments["food"]
-        return [TextContent(type="text", text=retrieve_knowledge(f"{food} 热量"))]
-
+        food = arguments.get("food", "")
+        result = tool_registry.execute_result(name, f"{food} 热量", {"fields": {"food": food}})
     elif name == "meal_planner":
-        calories = arguments["calories"]
-        meal_type = arguments["meal_type"]
-        return [TextContent(type="text", text=retrieve_knowledge(f"{calories}千卡 {meal_type} 组合"))]
-
+        calories = arguments.get("calories", "")
+        meal_type = arguments.get("meal_type", "")
+        result = tool_registry.execute_result(
+            name,
+            f"{calories}千卡 {meal_type} 组合",
+            {"fields": {"calories": calories, "meal_type": meal_type}},
+        )
     else:
-        raise ValueError(f"未知工具: {name}")
+        result = tool_registry.execute_result(name, "", arguments)
+    return [TextContent(type="text", text=json.dumps(result.model_dump(mode="json"), ensure_ascii=False))]
 
 
 async def main():

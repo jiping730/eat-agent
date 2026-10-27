@@ -1,35 +1,61 @@
+"""FastAPI application for the small-platform API and browser UI."""
+
+from __future__ import annotations
+
+import hmac
 import os
 import sys
 import time
 import uuid
-import hmac
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.cors import CORSMiddleware
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from flask import Flask, g, jsonify, request, render_template
-from flask_cors import CORS
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-from werkzeug.exceptions import HTTPException
 
 from config import settings
 from core.auth import AuthenticationError, AuthPrincipal, AuthService, hash_refresh_token
 from core.conversation_runtime import ConversationRuntime
 from core.logging_config import configure_logging, fingerprint, log_event
-from core.observability import (
-    record_conversation,
-    record_grill_decision,
-    record_http_request,
-    record_rate_limit_rejection,
-    set_app_info,
-)
+from core.observability import record_http_request, record_rate_limit_rejection, set_app_info
 from core.persistence import ConversationAccessError
 from core.rate_limiter import SlidingWindowRateLimiter
+from front.schemas import (
+    AskRequest,
+    AskResponse,
+    ConversationCreateRequest,
+    ConversationDetailResponse,
+    ConversationListResponse,
+    CredentialsRequest,
+    ErrorResponse,
+    LogoutRequest,
+    RefreshRequest,
+    TokenResponse,
+    UserResponse,
+)
 
 
-app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = settings.max_request_bytes
-CORS(app, origins=settings.cors_origin_list())
+ROOT_DIR = Path(__file__).resolve().parent
+app = FastAPI(title="轻松食 · 智能营养助手", version=settings.app_version)
+app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
+templates = Jinja2Templates(directory=str(ROOT_DIR / "templates"))
+
+origins = settings.cors_origin_list()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins if isinstance(origins, list) else ["*"],
+    allow_credentials=isinstance(origins, list),
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 logger = configure_logging(settings.log_level)
 startup_errors = settings.startup_errors()
@@ -42,106 +68,48 @@ set_app_info(settings.app_version, settings.app_env)
 
 PUBLIC_PATHS = {
     "/",
+    "/health/live",
+    "/health/ready",
     "/healthz",
     "/readyz",
     "/auth/register",
     "/auth/login",
     "/auth/refresh",
     "/auth/logout",
+    "/docs",
+    "/redoc",
+    "/openapi.json",
 }
 
 
-def _error_response(message: str, status_code: int):
-    return jsonify({"error": message, "request_id": getattr(g, "request_id", None)}), status_code
+def _request_id(request: Request) -> str:
+    return getattr(request.state, "request_id", "")
 
 
-@app.before_request
-def before_request():
-    g.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-    g.request_started_at = time.perf_counter()
-    g.principal = None
-
-    if request.path == "/metrics":
-        if not settings.metrics_enabled:
-            return _error_response("metrics 未启用", 404)
-        expected = settings.metrics_api_key
-        provided = request.headers.get("X-Metrics-Token", "")
-        if not provided:
-            authorization = request.headers.get("Authorization", "")
-            if authorization.lower().startswith("bearer "):
-                provided = authorization[7:].strip()
-        if settings.strict_security and not expected:
-            return _error_response("metrics 未配置访问密钥", 503)
-        if expected and not hmac.compare_digest(provided, expected):
-            return _error_response("metrics 未授权", 401)
-        return None
-
-    if request.path in PUBLIC_PATHS or request.path.startswith("/static/"):
-        return None
-
-    try:
-        g.principal = auth_service.authenticate(
-            request.headers.get("Authorization"),
-            request.headers.get("X-API-Key"),
-        )
-    except AuthenticationError as exc:
-        return _error_response(str(exc), 401)
-
-    if request.path == "/ask":
-        client_key = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
-        if not rate_limiter.allow(client_key):
-            record_rate_limit_rejection()
-            return _error_response("请求过于频繁，请稍后再试", 429)
-    return None
+def _error_response(request: Request, message: str, status_code: int, error_code: str = "request_error") -> JSONResponse:
+    payload = ErrorResponse(error=message, error_code=error_code, request_id=_request_id(request))
+    return JSONResponse(status_code=status_code, content=payload.model_dump())
 
 
-def _request_json() -> dict:
-    data = request.get_json(silent=True)
-    if not isinstance(data, dict):
-        raise ValueError("请求体必须是 JSON 对象")
-    return data
-
-
-def _platform_user_id(data: dict | None = None) -> str:
-    principal: AuthPrincipal | None = getattr(g, "principal", None)
+def _platform_user_id(request: Request, data: dict | None = None) -> str:
+    principal: AuthPrincipal | None = getattr(request.state, "principal", None)
     if principal and principal.auth_type == "jwt":
         requested_user_id = (data or {}).get("user_id")
         if requested_user_id is not None and requested_user_id != principal.user_id:
             raise PermissionError("不能使用其他用户身份")
         return principal.user_id
 
-    requested_user_id = (data or {}).get("user_id") or request.headers.get("X-User-ID") or request.args.get("user_id")
+    requested_user_id = (data or {}).get("user_id") or request.headers.get("X-User-ID")
     if not isinstance(requested_user_id, str) or not requested_user_id.strip():
         raise ValueError("缺少用户身份")
     return requested_user_id.strip()
 
 
-def _token_response(user, token_pair):
+def _token_response(user, token_pair) -> dict:
     return {
         **token_pair.to_dict(),
         "user": {"id": user.id, "username": user.username, "roles": user.roles or []},
     }
-
-
-@app.after_request
-def after_request(response):
-    request_id = getattr(g, "request_id", None)
-    if request_id:
-        response.headers["X-Request-ID"] = request_id
-    elapsed = time.perf_counter() - getattr(g, "request_started_at", time.perf_counter())
-    stable_path = _stable_path(request.path)
-    record_http_request(request.method, stable_path, response.status_code, elapsed)
-    log_event(
-        logger,
-        20,
-        "request_completed",
-        request_id=request_id,
-        method=request.method,
-        path=stable_path,
-        status_code=response.status_code,
-        response_time=round(elapsed, 4),
-    )
-    return response
 
 
 def _stable_path(path: str) -> str:
@@ -152,86 +120,152 @@ def _stable_path(path: str) -> str:
     return path
 
 
-@app.errorhandler(HTTPException)
-def handle_http_error(error: HTTPException):
-    return _error_response(error.description or "请求失败", error.code or 500)
+def _metrics_auth_error(request: Request) -> JSONResponse | None:
+    if not settings.metrics_enabled:
+        return _error_response(request, "metrics 未启用", 404, "metrics_disabled")
+    expected = settings.metrics_api_key
+    provided = request.headers.get("X-Metrics-Token", "")
+    if not provided:
+        authorization = request.headers.get("Authorization", "")
+        if authorization.lower().startswith("bearer "):
+            provided = authorization[7:].strip()
+    if settings.strict_security and not expected:
+        return _error_response(request, "metrics 未配置访问密钥", 503, "metrics_misconfigured")
+    if expected and not hmac.compare_digest(provided, expected):
+        return _error_response(request, "metrics 未授权", 401, "metrics_unauthorized")
+    return None
 
 
-@app.errorhandler(ConversationAccessError)
-def handle_conversation_access_error(error: ConversationAccessError):
-    return _error_response(str(error), 403)
+async def _call_with_rate_limit(request: Request, call_next):
+    if request.url.path == "/ask":
+        client_key = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown")
+        client_key = client_key.split(",")[0].strip()
+        if not rate_limiter.allow(client_key):
+            record_rate_limit_rejection()
+            return _error_response(request, "请求过于频繁，请稍后再试", 429, "rate_limited")
+    return await call_next(request)
 
 
-@app.errorhandler(PermissionError)
-def handle_permission_error(error: PermissionError):
-    return _error_response(str(error), 403)
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    request.state.request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    request.state.request_started_at = time.perf_counter()
+    request.state.principal = None
+
+    if request.url.path == "/metrics":
+        early_response = _metrics_auth_error(request)
+        response = early_response if early_response is not None else await call_next(request)
+    elif request.url.path not in PUBLIC_PATHS and not request.url.path.startswith("/static/"):
+        try:
+            request.state.principal = auth_service.authenticate(
+                request.headers.get("Authorization"),
+                request.headers.get("X-API-Key"),
+            )
+        except AuthenticationError as exc:
+            response = _error_response(request, str(exc), 401, "authentication_required")
+        else:
+            response = await _call_with_rate_limit(request, call_next)
+    else:
+        response = await call_next(request)
+
+    response.headers["X-Request-ID"] = request.state.request_id
+    elapsed = time.perf_counter() - request.state.request_started_at
+    stable_path = _stable_path(request.url.path)
+    record_http_request(request.method, stable_path, response.status_code, elapsed)
+    log_event(
+        logger,
+        20,
+        "request_completed",
+        request_id=request.state.request_id,
+        method=request.method,
+        path=stable_path,
+        status_code=response.status_code,
+        response_time=round(elapsed, 4),
+    )
+    return response
 
 
-@app.errorhandler(ValueError)
-def handle_value_error(error: ValueError):
-    return _error_response(str(error), 400)
+@app.exception_handler(ConversationAccessError)
+async def handle_conversation_access_error(request: Request, error: ConversationAccessError):
+    return _error_response(request, str(error), 403, "conversation_forbidden")
 
 
-@app.errorhandler(Exception)
-def handle_unexpected_error(error: Exception):
-    log_event(logger, 40, "request_failed", request_id=getattr(g, "request_id", None), error_type=type(error).__name__)
-    return _error_response("服务暂时不可用，请稍后再试", 500)
+@app.exception_handler(PermissionError)
+async def handle_permission_error(request: Request, error: PermissionError):
+    return _error_response(request, str(error), 403, "permission_denied")
 
 
-@app.route("/")
-def index():
-    return render_template("index.html")
+@app.exception_handler(KeyError)
+async def handle_key_error(request: Request, error: KeyError):
+    return _error_response(request, str(error).strip("'"), 404, "not_found")
 
 
-@app.route("/healthz")
-def healthz():
-    return jsonify({"status": "ok", "version": settings.app_version})
+@app.exception_handler(ValueError)
+async def handle_value_error(request: Request, error: ValueError):
+    return _error_response(request, str(error), 400, "invalid_request")
 
 
-@app.route("/readyz")
-def readyz():
+@app.exception_handler(RequestValidationError)
+async def handle_validation_error(request: Request, error: RequestValidationError):
+    return _error_response(request, "请求参数校验失败", 422, "validation_error")
+
+
+@app.exception_handler(StarletteHTTPException)
+async def handle_http_error(request: Request, error: StarletteHTTPException):
+    return _error_response(request, str(error.detail), error.status_code, "http_error")
+
+
+@app.exception_handler(Exception)
+async def handle_unexpected_error(request: Request, error: Exception):
+    log_event(logger, 40, "request_failed", request_id=_request_id(request), error_type=type(error).__name__)
+    return _error_response(request, "服务暂时不可用，请稍后再试", 500, "internal_error")
+
+
+@app.get("/", include_in_schema=False)
+def index(request: Request):
+    return templates.TemplateResponse(request=request, name="index.html", context={})
+
+
+@app.get("/health/live", include_in_schema=False)
+@app.get("/healthz", include_in_schema=False)
+def health_live():
+    return {"status": "ok", "version": settings.app_version}
+
+
+@app.get("/health/ready", include_in_schema=False)
+@app.get("/readyz", include_in_schema=False)
+def health_ready(request: Request):
     try:
         runtime.store.ping()
-    except Exception as exc:
-        log_event(logger, 40, "readiness_failed", request_id=g.request_id, error_type=type(exc).__name__)
-        return jsonify({"status": "not_ready", "request_id": g.request_id}), 503
-    try:
         runtime.coordinator.ping()
     except Exception as exc:
+        log_event(logger, 40, "readiness_failed", request_id=_request_id(request), error_type=type(exc).__name__)
         if settings.redis_url:
-            log_event(logger, 40, "redis_readiness_failed", request_id=g.request_id, error_type=type(exc).__name__)
-            return jsonify({"status": "not_ready", "request_id": g.request_id}), 503
-    return jsonify({"status": "ready", "version": settings.app_version})
+            return JSONResponse(status_code=503, content={"status": "not_ready", "request_id": _request_id(request)})
+    return {"status": "ready", "version": settings.app_version}
 
 
-@app.route("/metrics")
+@app.get("/metrics", include_in_schema=False)
 def metrics():
-    if not settings.metrics_enabled:
-        return _error_response("metrics 未启用", 404)
-    return app.response_class(generate_latest(), content_type=CONTENT_TYPE_LATEST)
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.route("/auth/register", methods=["POST"])
-def register():
-    data = _request_json()
-    username = data.get("username")
-    password = data.get("password")
-    if not isinstance(username, str) or not 3 <= len(username.strip()) <= 128:
-        return _error_response("用户名长度必须在 3 到 128 个字符之间", 400)
-    if not isinstance(password, str) or len(password) < 8:
-        return _error_response("密码至少需要 8 个字符", 400)
+@app.post("/auth/register", response_model=TokenResponse, status_code=201)
+def register(data: CredentialsRequest, request: Request):
+    username = data.username.strip()
+    if not 3 <= len(username) <= 128:
+        raise ValueError("用户名长度必须在 3 到 128 个字符之间")
     if not auth_service.jwt_enabled:
-        return _error_response("当前服务未启用用户认证", 503)
-
+        return _error_response(request, "当前服务未启用用户认证", 503, "authentication_disabled")
     user_id = str(uuid.uuid4())
     try:
         user = runtime.store.create_user(
             user_id=user_id,
-            username=username.strip(),
-            password_hash=auth_service.hash_password(password),
+            username=username,
+            password_hash=auth_service.hash_password(data.password),
         )
     except ValueError as exc:
-        return _error_response(str(exc), 409)
+        return _error_response(request, str(exc), 409, "username_conflict")
     tokens = auth_service.issue_tokens(user.id, tuple(user.roles or []))
     log_event(logger, 20, "auth_register_succeeded", user=fingerprint(user.id))
     runtime.store.save_refresh_token(
@@ -239,22 +273,17 @@ def register():
         token_hash=hash_refresh_token(tokens.refresh_token),
         expires_at=datetime.now(timezone.utc) + timedelta(days=settings.jwt_refresh_ttl_days),
     )
-    return jsonify(_token_response(user, tokens)), 201
+    return _token_response(user, tokens)
 
 
-@app.route("/auth/login", methods=["POST"])
-def login():
-    data = _request_json()
-    username = data.get("username")
-    password = data.get("password")
-    if not isinstance(username, str) or not isinstance(password, str):
-        return _error_response("用户名和密码不能为空", 400)
+@app.post("/auth/login", response_model=TokenResponse)
+def login(data: CredentialsRequest, request: Request):
     if not auth_service.jwt_enabled:
-        return _error_response("当前服务未启用用户认证", 503)
-    user = runtime.store.get_user_by_username(username.strip())
-    if user is None or not user.is_active or not auth_service.verify_password(user.password_hash, password):
+        return _error_response(request, "当前服务未启用用户认证", 503, "authentication_disabled")
+    user = runtime.store.get_user_by_username(data.username.strip())
+    if user is None or not user.is_active or not auth_service.verify_password(user.password_hash, data.password):
         log_event(logger, 30, "auth_login_failed")
-        return _error_response("用户名或密码错误", 401)
+        return _error_response(request, "用户名或密码错误", 401, "invalid_credentials")
     tokens = auth_service.issue_tokens(user.id, tuple(user.roles or []))
     log_event(logger, 20, "auth_login_succeeded", user=fingerprint(user.id))
     runtime.store.save_refresh_token(
@@ -262,22 +291,18 @@ def login():
         token_hash=hash_refresh_token(tokens.refresh_token),
         expires_at=datetime.now(timezone.utc) + timedelta(days=settings.jwt_refresh_ttl_days),
     )
-    return jsonify(_token_response(user, tokens))
+    return _token_response(user, tokens)
 
 
-@app.route("/auth/refresh", methods=["POST"])
-def refresh():
-    data = _request_json()
-    refresh_token = data.get("refresh_token")
-    if not isinstance(refresh_token, str) or not refresh_token:
-        return _error_response("refresh_token 不能为空", 400)
-    token_record = runtime.store.get_refresh_token(hash_refresh_token(refresh_token))
+@app.post("/auth/refresh", response_model=TokenResponse)
+def refresh(data: RefreshRequest, request: Request):
+    token_record = runtime.store.get_refresh_token(hash_refresh_token(data.refresh_token))
     if token_record is None:
-        return _error_response("刷新令牌无效或已过期", 401)
+        return _error_response(request, "刷新令牌无效或已过期", 401, "invalid_refresh_token")
     user = runtime.store.get_user(token_record.user_id)
     if user is None or not user.is_active:
-        return _error_response("用户不可用", 401)
-    runtime.store.revoke_refresh_token(hash_refresh_token(refresh_token))
+        return _error_response(request, "用户不可用", 401, "user_unavailable")
+    runtime.store.revoke_refresh_token(hash_refresh_token(data.refresh_token))
     tokens = auth_service.issue_tokens(user.id, tuple(user.roles or []))
     log_event(logger, 20, "auth_refresh_succeeded", user=fingerprint(user.id))
     runtime.store.save_refresh_token(
@@ -285,93 +310,90 @@ def refresh():
         token_hash=hash_refresh_token(tokens.refresh_token),
         expires_at=datetime.now(timezone.utc) + timedelta(days=settings.jwt_refresh_ttl_days),
     )
-    return jsonify(_token_response(user, tokens))
+    return _token_response(user, tokens)
 
 
-@app.route("/auth/logout", methods=["POST"])
-def logout():
-    data = request.get_json(silent=True) or {}
-    refresh_token = data.get("refresh_token")
-    if isinstance(refresh_token, str) and refresh_token:
-        runtime.store.revoke_refresh_token(hash_refresh_token(refresh_token))
-    return jsonify({"status": "ok"})
+@app.post("/auth/logout")
+def logout(data: LogoutRequest | None = None):
+    if data and data.refresh_token:
+        runtime.store.revoke_refresh_token(hash_refresh_token(data.refresh_token))
+    return {"status": "ok"}
 
 
-@app.route("/me")
-def me():
-    user_id = _platform_user_id()
+@app.get("/me", response_model=UserResponse)
+def me(request: Request):
+    user_id = _platform_user_id(request)
     user = runtime.store.get_user(user_id)
     if user is None:
-        return _error_response("用户不存在", 404)
-    return jsonify({"id": user.id, "username": user.username, "roles": user.roles or []})
+        return _error_response(request, "用户不存在", 404, "user_not_found")
+    return {"id": user.id, "username": user.username, "roles": user.roles or []}
 
 
-@app.route("/conversations", methods=["GET", "POST"])
-def conversations():
-    data = request.get_json(silent=True) if request.method == "POST" else None
-    data = data if isinstance(data, dict) else {}
-    user_id = _platform_user_id(data)
-    if request.method == "GET":
-        return jsonify(
+@app.get("/conversations", response_model=ConversationListResponse)
+def list_conversations(request: Request):
+    user_id = _platform_user_id(request)
+    return {
+        "items": [
             {
-                "items": [
-                    {
-                        "id": item.id,
-                        "title": item.title,
-                        "updated_at": item.updated_at.isoformat(),
-                        "version": item.version,
-                    }
-                    for item in runtime.store.list_conversations(user_id)
-                ]
+                "id": item.id,
+                "title": item.title,
+                "updated_at": item.updated_at.isoformat(),
+                "version": item.version,
             }
-        )
+            for item in runtime.store.list_conversations(user_id)
+        ]
+    }
 
+
+@app.post("/conversations", status_code=201)
+def create_conversation(data: ConversationCreateRequest, request: Request):
+    user_id = _platform_user_id(request)
     conversation = runtime.store.create_conversation(
         conversation_id=str(uuid.uuid4()),
         user_id=user_id,
-        title=str(data.get("title") or "新会话"),
+        title=data.title,
     )
-    return jsonify({"id": conversation.id, "title": conversation.title}), 201
+    return {"id": conversation.id, "title": conversation.title, "expires_at": conversation.expires_at.isoformat()}
 
 
-@app.route("/conversations/<conversation_id>", methods=["GET", "DELETE"])
-def conversation_detail(conversation_id: str):
-    user_id = _platform_user_id()
-    if request.method == "DELETE":
-        runtime.store.archive_conversation(conversation_id, user_id)
-        return jsonify({"status": "archived"})
+@app.get("/conversations/{conversation_id}", response_model=ConversationDetailResponse)
+def conversation_detail(conversation_id: str, request: Request):
+    user_id = _platform_user_id(request)
     snapshot = runtime.store.load(conversation_id, user_id)
-    return jsonify(
-        {
-            "id": snapshot.conversation_id,
-            "title": snapshot.title,
-            "version": snapshot.version,
-            "messages": snapshot.messages,
-        }
-    )
+    return {
+        "id": snapshot.conversation_id,
+        "title": snapshot.title,
+        "version": snapshot.version,
+        "messages": snapshot.messages,
+    }
 
 
-@app.route("/ask", methods=["POST"])
-def ask():
-    data = _request_json()
+@app.post("/conversations/{conversation_id}/archive")
+def archive_conversation(conversation_id: str, request: Request):
+    runtime.store.archive_conversation(conversation_id, _platform_user_id(request))
+    return {"status": "archived"}
 
-    question = data.get("question", "")
-    if not isinstance(question, str) or not question.strip():
-        return _error_response("question 不能为空", 400)
 
-    user_id = _platform_user_id(data)
-    conversation_id = data.get("conversation_id") or user_id
-    if conversation_id is not None and not isinstance(conversation_id, str):
-        return _error_response("conversation_id 必须是字符串", 400)
+@app.delete("/conversations/{conversation_id}")
+def delete_conversation(conversation_id: str, request: Request):
+    runtime.store.delete_conversation(conversation_id, _platform_user_id(request))
+    return {"status": "deleted"}
 
+
+@app.post("/ask", response_model=AskResponse)
+def ask(data: AskRequest, request: Request):
+    payload = data.model_dump()
+    user_id = _platform_user_id(request, payload)
     response = runtime.ask(
-        question,
+        data.question,
         user_id=user_id,
-        conversation_id=conversation_id,
-        request_id=g.request_id,
+        conversation_id=data.conversation_id,
+        request_id=_request_id(request),
     )
-    return jsonify(response.to_dict())
+    return response.to_dict()
 
 
 if __name__ == "__main__":
-    app.run(debug=False, host="0.0.0.0", port=5000)
+    import uvicorn
+
+    uvicorn.run("front.app:app", host="0.0.0.0", port=5000)

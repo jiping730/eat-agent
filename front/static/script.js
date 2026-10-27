@@ -165,7 +165,10 @@ async function loadConversations() {
         option.textContent = item.title || item.id.slice(0, 8);
         conversationSelect.appendChild(option);
     });
-    if (conversationId) conversationSelect.value = conversationId;
+    if (conversationId) {
+        conversationSelect.value = conversationId;
+        if (conversationSelect.value === conversationId) await openConversation(conversationId);
+    }
 }
 
 async function openConversation(id) {

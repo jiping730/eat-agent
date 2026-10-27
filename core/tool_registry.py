@@ -9,14 +9,40 @@ can delegate to the same handlers without becoming a second implementation.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
+from pydantic import BaseModel, Field
 from config import settings
 from rag.retriever import get_retriever_with_score
 from tavily import TavilyClient
 
 
 ToolHandler = Callable[[str, Mapping[str, Any]], str]
+
+
+class ToolResult(BaseModel):
+    """Stable tool boundary shared by Workflow, Skill adapters, and MCP."""
+
+    status: str = "success"
+    data: Any = None
+    sources: list[dict[str, Any]] = Field(default_factory=list)
+    error_code: str | None = None
+    trace_id: str = Field(default_factory=lambda: str(uuid4()))
+
+    @property
+    def text(self) -> str:
+        if isinstance(self.data, str):
+            return self.data
+        return str(self.data or "")
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    name: str
+    description: str
+    input_schema: dict[str, Any]
 
 
 class ToolNotFoundError(LookupError):
@@ -28,26 +54,52 @@ class ToolRegistry:
 
     def __init__(self) -> None:
         self._handlers: dict[str, ToolHandler] = {}
+        self._specs: dict[str, ToolSpec] = {}
 
-    def register(self, name: str, handler: ToolHandler) -> None:
+    def register(
+        self,
+        name: str,
+        handler: ToolHandler,
+        *,
+        description: str = "",
+        input_schema: dict[str, Any] | None = None,
+    ) -> None:
         if not name or not name.strip():
             raise ValueError("tool name 不能为空")
         if name in self._handlers:
             raise ValueError(f"工具已注册: {name}")
         self._handlers[name] = handler
+        self._specs[name] = ToolSpec(name, description, input_schema or {"type": "object"})
 
     @property
     def names(self) -> tuple[str, ...]:
         return tuple(self._handlers.keys())
 
-    def execute(self, name: str, query: str, context: Mapping[str, Any] | None = None) -> str:
+    @property
+    def specs(self) -> tuple[ToolSpec, ...]:
+        return tuple(self._specs.values())
+
+    def execute_result(self, name: str, query: str, context: Mapping[str, Any] | None = None) -> ToolResult:
+        trace_id = str(uuid4())
         handler = self._handlers.get(name)
         if handler is None:
-            raise ToolNotFoundError(f"未注册工具: {name}")
-        result = handler(query, context or {})
-        if not isinstance(result, str):
-            raise TypeError(f"工具 {name} 必须返回字符串，实际为 {type(result).__name__}")
-        return result
+            return ToolResult(status="error", error_code="tool_not_found", trace_id=trace_id)
+        try:
+            result = handler(query, context or {})
+            if isinstance(result, ToolResult):
+                return result.model_copy(update={"trace_id": trace_id})
+            if not isinstance(result, str):
+                return ToolResult(status="error", error_code="invalid_tool_result", trace_id=trace_id)
+            return ToolResult(status="success", data=result, trace_id=trace_id)
+        except Exception:
+            return ToolResult(status="error", error_code="tool_execution_failed", trace_id=trace_id)
+
+    def execute(self, name: str, query: str, context: Mapping[str, Any] | None = None) -> str:
+        """Compatibility text API; new callers should use ``execute_result``."""
+        result = self.execute_result(name, query, context)
+        if result.status == "success":
+            return result.text
+        return "工具暂时不可用，请稍后重试。"
 
 
 def retrieve_knowledge(query: str, *, score_threshold: float = 2.0) -> str:
@@ -72,8 +124,8 @@ def search_web(query: str) -> str:
         results = [item.get("content", "") for item in response.get("results", [])]
         results = [item for item in results if item]
         return "\n\n".join(results) if results else "未找到相关信息。"
-    except Exception as exc:
-        return f"搜索失败: {exc}"
+    except Exception:
+        return "搜索暂时不可用，请稍后重试。"
 
 
 def _retrieval_handler(query: str, _: Mapping[str, Any]) -> str:
@@ -102,8 +154,28 @@ def build_default_tool_registry() -> ToolRegistry:
     """Build the tools allowed by the canonical application workflow."""
 
     registry = ToolRegistry()
-    registry.register("retrieval_tool", _retrieval_handler)
-    registry.register("calorie_query", _calorie_handler)
-    registry.register("meal_planner", _meal_planner_handler)
-    registry.register("web_search", lambda query, _: search_web(query))
+    registry.register(
+        "retrieval_tool",
+        _retrieval_handler,
+        description="查询本地营养知识库",
+        input_schema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+    )
+    registry.register(
+        "calorie_query",
+        _calorie_handler,
+        description="查询食物热量",
+        input_schema={"type": "object", "properties": {"food": {"type": "string"}}, "required": ["food"]},
+    )
+    registry.register(
+        "meal_planner",
+        _meal_planner_handler,
+        description="根据已确认参数生成餐食规划",
+        input_schema={"type": "object", "properties": {"meal_type": {"type": "string"}}},
+    )
+    registry.register(
+        "web_search",
+        lambda query, _: search_web(query),
+        description="查询实时网络信息",
+        input_schema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+    )
     return registry

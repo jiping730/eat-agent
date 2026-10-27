@@ -1,5 +1,5 @@
 import re
-from core.tool_registry import retrieve_knowledge
+from core.tool_registry import build_default_tool_registry
 
 
 class CalorieQuerySkill:
@@ -17,4 +17,4 @@ class CalorieQuerySkill:
         food = CalorieQuerySkill.extract_food(input_text)
         if not food:
             return "请告诉我你想查询哪种食物？"
-        return retrieve_knowledge(f"{food} 热量")
+        return build_default_tool_registry().execute("calorie_query", f"{food} 热量", {"fields": {"food": food}})

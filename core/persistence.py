@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, select
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from config import settings
@@ -19,6 +19,27 @@ from config import settings
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _as_utc(value: datetime) -> datetime:
+    """Normalize database datetimes before comparing them with utc_now().
+
+    SQLite does not preserve timezone information for SQLAlchemy DateTime
+    columns, while PostgreSQL does. Keeping this normalization at the storage
+    boundary makes expiry and token checks behave identically in local tests
+    and in production.
+    """
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _is_expired(value: datetime) -> bool:
+    return _as_utc(value) <= utc_now()
+
+
+def conversation_expiry() -> datetime:
+    return utc_now() + timedelta(days=max(1, settings.conversation_ttl_days))
 
 
 class Base(DeclarativeBase):
@@ -58,6 +79,7 @@ class ConversationRecord(Base):
     grill_context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=conversation_expiry)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
@@ -107,6 +129,7 @@ class ConversationSnapshot:
     current_goal: str | None
     title: str = "新会话"
     version: int = 1
+    expires_at: datetime | None = None
 
 
 class ConversationAccessError(PermissionError):
@@ -161,7 +184,7 @@ class ConversationStore:
     def get_refresh_token(self, token_hash: str) -> RefreshTokenRecord | None:
         with self.session_factory() as session:
             token = session.scalar(select(RefreshTokenRecord).where(RefreshTokenRecord.token_hash == token_hash))
-            if token is None or token.revoked_at is not None or token.expires_at <= utc_now():
+            if token is None or token.revoked_at is not None or _is_expired(token.expires_at):
                 return None
             return token
 
@@ -176,7 +199,11 @@ class ConversationStore:
             return list(
                 session.scalars(
                     select(ConversationRecord)
-                    .where(ConversationRecord.user_id == user_id, ConversationRecord.archived_at.is_(None))
+                    .where(
+                        ConversationRecord.user_id == user_id,
+                        ConversationRecord.archived_at.is_(None),
+                        ConversationRecord.expires_at > utc_now(),
+                    )
                     .order_by(ConversationRecord.updated_at.desc())
                 ).all()
             )
@@ -188,6 +215,7 @@ class ConversationStore:
                 user_id=user_id,
                 title=title[:200] or "新会话",
                 grill_context={},
+                expires_at=conversation_expiry(),
                 created_at=utc_now(),
                 updated_at=utc_now(),
             )
@@ -208,6 +236,23 @@ class ConversationStore:
                 raise KeyError("会话不存在")
             conversation.archived_at = utc_now()
 
+    def delete_conversation(self, conversation_id: str, user_id: str) -> None:
+        """Permanently delete one user-owned conversation and its dependent data."""
+        with self.session_factory.begin() as session:
+            conversation = session.scalar(
+                select(ConversationRecord).where(
+                    ConversationRecord.id == conversation_id,
+                    ConversationRecord.user_id == user_id,
+                )
+            )
+            if conversation is None:
+                if session.get(ConversationRecord, conversation_id) is not None:
+                    raise ConversationAccessError("无权访问该会话")
+                raise KeyError("会话不存在")
+            session.execute(delete(MessageRecord).where(MessageRecord.conversation_id == conversation_id))
+            session.execute(delete(IdempotencyRecord).where(IdempotencyRecord.conversation_id == conversation_id))
+            session.delete(conversation)
+
     def get_idempotent_response(self, conversation_id: str, user_id: str, request_id: str) -> dict[str, Any] | None:
         with self.session_factory() as session:
             record = session.scalar(
@@ -225,17 +270,21 @@ class ConversationStore:
                 select(ConversationRecord).where(
                     ConversationRecord.id == conversation_id,
                     ConversationRecord.user_id == user_id,
+                    ConversationRecord.expires_at > utc_now(),
                 )
             )
             if conversation is None:
                 existing = session.get(ConversationRecord, conversation_id)
                 if existing is not None:
+                    if _is_expired(existing.expires_at):
+                        raise KeyError("会话已过期")
                     raise ConversationAccessError("无权访问该会话")
                 conversation = ConversationRecord(
                     id=conversation_id,
                     user_id=user_id,
                     title="新会话",
                     grill_context={},
+                    expires_at=conversation_expiry(),
                     created_at=utc_now(),
                     updated_at=utc_now(),
                 )
@@ -256,6 +305,7 @@ class ConversationStore:
                 current_goal=conversation.current_goal,
                 title=conversation.title,
                 version=conversation.version,
+                expires_at=conversation.expires_at,
             )
 
     def save_turn(
@@ -278,16 +328,21 @@ class ConversationStore:
                 select(ConversationRecord).where(
                     ConversationRecord.id == conversation_id,
                     ConversationRecord.user_id == user_id,
+                    ConversationRecord.archived_at.is_(None),
+                    ConversationRecord.expires_at > utc_now(),
                 ).with_for_update()
             )
             if conversation is None:
                 existing = session.get(ConversationRecord, conversation_id)
                 if existing is not None:
+                    if _is_expired(existing.expires_at):
+                        raise KeyError("会话已过期")
                     raise ConversationAccessError("无权访问该会话")
                 conversation = ConversationRecord(
                     id=conversation_id,
                     user_id=user_id,
                     title=user_message[:200] or "新会话",
+                    expires_at=conversation_expiry(),
                     created_at=now,
                     updated_at=now,
                 )

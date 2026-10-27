@@ -37,8 +37,10 @@ dependencies = [
     "zhipuai==2.1.5.20250825",
     "mcp==1.1.3",
     "neo4j>=5.0.0",
-    "flask",
-    "flask-cors",
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "jinja2>=3.1,<4.0",
+    "werkzeug>=3.1,<4.0",
     "langgraph==0.0.51",
     "tavily-python>=0.3.0",
 ]

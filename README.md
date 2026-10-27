@@ -16,6 +16,8 @@
 
 已完成阶段的实际改动、对应 Git 提交、测试结果和已知边界，见：[项目实施记录](docs/implementation-record.md)。
 
+后续开发的唯一主线和优先级清单见：[项目实施主线](docs/implementation-roadmap.md)。其中 `P0-5` 专指 Grill v1 产品化；历史记录中的 `P05` 企业级运行保障是另一套已完成的阶段编号。
+
 ## 项目结构
 
 ```

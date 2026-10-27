@@ -257,20 +257,21 @@ def create_workflow(
             tool_name = state["plan"].pop(0)
             print(f"执行工具: {tool_name}")
 
-            result = tool_registry.execute(
+            result = tool_registry.execute_result(
                 tool_name,
                 state["messages"][-1]["content"],
                 state.get("grill_context", {}),
             )
 
-            state["tool_outputs"][tool_name] = result
+            state["tool_outputs"][tool_name] = result.text
+            state.setdefault("tool_results", {})[tool_name] = result.model_dump(mode="json")
             print("工具执行完成")
         except Exception as e:
-            print(f"❌ execute_tool 异常: {e}")
+            print(f"❌ execute_tool 异常: {type(e).__name__}")
             traceback.print_exc()
             # 确保即使出错也记录结果，避免工作流中断
             if tool_name:
-                state["tool_outputs"][tool_name] = f"工具执行失败: {e}"
+                state["tool_outputs"][tool_name] = "工具暂时不可用，请稍后重试。"
         print("<<< 离开 execute_tool")
         return state
 
