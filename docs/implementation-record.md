@@ -21,6 +21,7 @@
 | P1-1 | 小型平台 RAG 检索质量升级 | 待提交 | 已实现并完成验收；详见 [P1-1 实施文档](p1-1-implementation.md) |
 | P1-2 | 小型平台模型网关和模型路由 | 待提交 | 已实现并完成验收；详见 [P1-2 实施文档](p1-2-implementation.md) |
 | P1-3 | 小型平台流式对话体验 | 待提交 | 已实现并完成验收；详见 [P1-3 实施文档](p1-3-implementation.md) |
+| P1-4 | 小型平台 MCP 工具网关 | 待提交 | 已实现并完成验收；详见 [P1-4 实施文档](p1-4-implementation.md) |
 
 实施时间：2026-10-27。
 
@@ -680,7 +681,34 @@ Black / isort / Ruff / Mypy 变更范围检查：通过
 
 本阶段没有引入跨节点流式接管、断点续传、消息版本树、反馈分析后台或 WebSocket/消息队列；这些能力留待平台规模和并发需求明确后再评估。
 
-## 16. 当前已知边界
+## 16. P1-4：MCP 工具网关实施记录
+
+本阶段严格按照主线中的 `P1-4：MCP 工具网关` 实施，目标是在当前小型平台单体架构内，将本地 MCP Server 接入主 Workflow，并复用 Tool Registry 的统一执行边界。完整实现说明见 [P1-4 实施文档](p1-4-implementation.md)。
+
+### 16.1 注册中心和工具发现
+
+- 新增 `core/mcp_gateway.py`，实现配置驱动的 `McpServerRegistry` 和 `McpToolGateway`。
+- 默认以 stdio 启动 `nutrition_local`，完成 MCP Client 初始化、工具发现、版本记录和 Session 生命周期管理。
+- MCP 工具以 `{server_name}.{tool_name}` 保留全限定名；与既有 Workflow 逻辑同名的工具保持原名称并由 MCP 实现替换。
+
+### 16.2 统一执行边界
+
+- MCP 工具转换为现有 `ToolSpec`，继续复用调用方权限、意图权限、输入 Schema、超时、重试、熔断和审计。
+- 增加 MCP 输出 Schema 校验和 MCP 来源信息，禁止任意工具暴露。
+- 修复 stdio Server 日志写入 stdout 的协议污染问题，MCP JSON-RPC stdout 只保留协议帧。
+- MCP 依赖采用延迟加载；MCP 不可用时保留本地工具回退，不影响应用启动。
+
+### 16.3 配置和验证
+
+- `.env.example`、`docker-compose.yml` 增加 MCP Server 名称、允许工具、Server JSON 和启动超时配置。
+- 已在 Python 3.12 Docker 环境验证 stdio Server 注册、工具发现、调用、统一 Tool Registry 执行和 Session 关闭。
+- P1-4 专项测试：`4 passed`；全量非浏览器测试：`127 passed, 1 skipped`。
+- 真实 `/ask` 验收通过：主 Workflow 的 `calorie_query` 同时产生 MCP 内层和 Workflow 外层审计，最终接口返回 `200`。
+- 本阶段未修改前端资源；P1-3 浏览器 E2E 回归基线保持 `1 passed`。
+
+本阶段没有引入远程 MCP 服务发现、跨节点 Session、独立 MCP 网关微服务或在线工具管理后台。
+
+## 17. 当前已知边界
 
 本记录只记录已经实际完成的 Grill Engine、P01、P02、P03、P04、P05、P0-8、P1-0、P1-1、P1-2 和 P1-3，不把后续计划写成已完成能力。
 

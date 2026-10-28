@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import hashlib
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -36,7 +37,8 @@ def configure_logging(level: str = "INFO") -> logging.Logger:
     logger = logging.getLogger("eat_agent")
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
     if not logger.handlers:
-        handler = logging.StreamHandler(sys.stdout)
+        stream = sys.stderr if os.getenv("MCP_STDIO", "").lower() == "1" else sys.stdout
+        handler = logging.StreamHandler(stream)
         handler.setFormatter(JsonFormatter())
         logger.addHandler(handler)
     logger.propagate = False

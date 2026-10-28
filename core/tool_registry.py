@@ -160,12 +160,13 @@ class ToolRegistry:
         retryable: bool = True,
         allowed_callers: Iterable[str] | None = None,
         allowed_intents: Iterable[str] | None = None,
+        replace: bool = False,
     ) -> None:
         if not name or not name.strip():
             raise ValueError("tool name 不能为空")
         if not callable(handler):
             raise TypeError("tool handler 必须可调用")
-        if name in self._handlers:
+        if name in self._handlers and not replace:
             raise ValueError(f"工具已注册: {name}")
 
         resolved_timeout = settings.tool_default_timeout_seconds if timeout_seconds is None else timeout_seconds
@@ -395,16 +396,23 @@ class ToolRegistry:
                 )
 
         schema = spec.input_schema or {}
-        if schema.get("type") == "object" and not isinstance(payload, Mapping):
+        schema_payload: Mapping[str, Any] = payload
+        # MCP schemas describe top-level tool arguments, while the canonical
+        # workflow keeps user fields under ``fields`` for local tool models.
+        # Validate both without changing the legacy local-tool contract.
+        mcp_arguments = payload.get("mcp_arguments")
+        if isinstance(mcp_arguments, Mapping):
+            schema_payload = {**payload, **mcp_arguments}
+        if schema.get("type") == "object" and not isinstance(schema_payload, Mapping):
             return ToolResult(status="validation_error", error_code="invalid_tool_input", trace_id=trace_id)
         for required in schema.get("required", []):
-            if required not in payload or payload[required] in (None, ""):
+            if required not in schema_payload or schema_payload[required] in (None, ""):
                 return ToolResult(status="validation_error", error_code="invalid_tool_input", trace_id=trace_id)
         for key, property_schema in schema.get("properties", {}).items():
-            if key not in payload or payload[key] is None:
+            if key not in schema_payload or schema_payload[key] is None:
                 continue
             expected_type = property_schema.get("type")
-            value = payload[key]
+            value = schema_payload[key]
             if expected_type == "string" and not isinstance(value, str):
                 return ToolResult(status="validation_error", error_code="invalid_tool_input", trace_id=trace_id)
             if expected_type == "object" and not isinstance(value, Mapping):

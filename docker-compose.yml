@@ -25,12 +25,18 @@ services:
       retries: 12
 
   eat-agent:
-    image: eat-agent:p07
+    image: eat-agent:p1-4
     build: .
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://eat_agent:eat_agent@postgres:5432/eat_agent}
       ZHIPUAI_API_KEY: ${ZHIPUAI_API_KEY:-}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
+      ENABLE_MCP: ${ENABLE_MCP:-true}
+      LOCAL_MCP_SERVER: ${LOCAL_MCP_SERVER:-stdio}
+      MCP_LOCAL_SERVER_NAME: ${MCP_LOCAL_SERVER_NAME:-nutrition_local}
+      MCP_LOCAL_ALLOWED_TOOLS: ${MCP_LOCAL_ALLOWED_TOOLS:-calorie_query,meal_planner}
+      MCP_SERVERS_JSON: ${MCP_SERVERS_JSON:-}
+      MCP_STARTUP_TIMEOUT_SECONDS: ${MCP_STARTUP_TIMEOUT_SECONDS:-10}
       LLM_MODEL: ${LLM_MODEL:-glm-4-flash}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embedding-2}
       AUTO_CREATE_SCHEMA: ${AUTO_CREATE_SCHEMA:-false}

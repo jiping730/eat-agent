@@ -390,6 +390,10 @@ def create_workflow(
             execution_context["conversation_id"] = state.get("conversation_id")
             execution_context["trace_id"] = state.get("trace_id")
             execution_context["user_id"] = state.get("user_id")
+            if isinstance(execution_context.get("fields"), dict):
+                # MCP tool schemas describe top-level arguments; local tools
+                # continue to consume the same fields nested under context.
+                execution_context["mcp_arguments"] = dict(execution_context["fields"])
             result = tool_registry.execute_result(
                 tool_name,
                 state["messages"][-1]["content"],
@@ -401,7 +405,11 @@ def create_workflow(
                 state["tool_outputs"][tool_name] = result.text
             else:
                 state["tool_outputs"][tool_name] = tool_error_message(result)
-                state.setdefault("tool_failures", []).append(result.model_dump(mode="json"))
+                failures = state.get("tool_failures")
+                if not isinstance(failures, list):
+                    failures = []
+                    state["tool_failures"] = failures
+                failures.append(result.model_dump(mode="json"))
             state.setdefault("tool_results", {})[tool_name] = result.model_dump(mode="json")
             state.setdefault("tool_sources", {})[tool_name] = result.sources
             log_event(logger, 20, "workflow_tool_completed", tool_name=tool_name, status=result.status)
@@ -417,7 +425,11 @@ def create_workflow(
             # 确保即使出错也记录结果，避免工作流中断
             if tool_name:
                 state["tool_outputs"][tool_name] = "工具暂时不可用，请稍后重试。"
-                state.setdefault("tool_failures", []).append(
+                failures = state.get("tool_failures")
+                if not isinstance(failures, list):
+                    failures = []
+                    state["tool_failures"] = failures
+                failures.append(
                     {
                         "status": "tool_execution_failed",
                         "error_code": "tool_execution_failed",

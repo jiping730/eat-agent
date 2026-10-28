@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     # MCP 配置
     enable_mcp: bool = True
     local_mcp_server: str = "stdio"  # 可选 stdio, sse
+    mcp_local_server_name: str = "nutrition_local"
+    mcp_local_allowed_tools: str = "calorie_query,meal_planner"
+    mcp_servers_json: str = ""
+    mcp_startup_timeout_seconds: float = 10.0
     firecrawl_api_key: Optional[str] = None
 
     # GraphRAG 配置

@@ -7,12 +7,22 @@ if str(project_root) not in sys.path:
 
 import asyncio
 import json
+import os
+
+# stdout is reserved for MCP JSON-RPC frames; application logs must use stderr.
+os.environ.setdefault("MCP_STDIO", "1")
+
 from mcp.server import Server, stdio_server
 from mcp.types import TextContent, Tool
-from core.tool_registry import ToolRegistry, build_default_tool_registry
+from config import settings
+from core.tool_registry import ToolRegistry, ToolResult, build_default_tool_registry
 # 创建服务器实例
 server = Server("nutrition-local-server")
 tool_registry: ToolRegistry = build_default_tool_registry()
+
+
+def allowed_tools() -> set[str]:
+    return {item.strip() for item in settings.mcp_local_allowed_tools.split(",") if item.strip()}
 
 
 @server.list_tools()
@@ -20,31 +30,21 @@ async def handle_list_tools() -> list[Tool]:
     return [
         Tool(name=spec.name, description=spec.description, inputSchema=spec.input_schema)
         for spec in tool_registry.specs
-        if spec.name in {"calorie_query", "meal_planner"}
+        if spec.name in allowed_tools() and "mcp" in spec.allowed_callers
     ]
 
 
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: dict) -> list[TextContent]:
-    if name == "calorie_query":
-        food = arguments.get("food", "")
-        result = tool_registry.execute_result(
-            name,
-            f"{food} 热量",
-            {"fields": {"food": food}},
-            caller="mcp",
-        )
-    elif name == "meal_planner":
-        calories = arguments.get("calories", "")
-        meal_type = arguments.get("meal_type", "")
-        result = tool_registry.execute_result(
-            name,
-            f"{calories}千卡 {meal_type} 组合",
-            {"fields": {"calories": calories, "meal_type": meal_type}},
-            caller="mcp",
-        )
+    if name not in allowed_tools():
+        result = ToolResult(status="permission_denied", error_code="tool_not_allowed")
     else:
-        result = tool_registry.execute_result(name, "", arguments, caller="mcp")
+        result = tool_registry.execute_result(
+            name,
+            json.dumps(arguments, ensure_ascii=False),
+            {"fields": arguments, "mcp_arguments": arguments},
+            caller="mcp",
+        )
     return [TextContent(type="text", text=json.dumps(result.model_dump(mode="json"), ensure_ascii=False))]
 
 

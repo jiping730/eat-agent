@@ -129,6 +129,31 @@ class McpToolContract(ContractModel):
     allowed_callers: list[str] = Field(default_factory=list, max_length=32)
 
 
+class McpServerConfig(ContractModel):
+    """Configuration for one MCP server in the small-platform registry."""
+
+    name: str = Field(min_length=1, max_length=128)
+    version: str = Field(default="1", min_length=1, max_length=64)
+    transport: Literal["stdio"] = "stdio"
+    command: str = Field(min_length=1, max_length=512)
+    args: list[str] = Field(default_factory=list, max_length=32)
+    env: dict[str, str] = Field(default_factory=dict)
+    enabled: bool = True
+    startup_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+
+
+class McpCallRequest(ContractModel):
+    """Auditable request envelope used by the MCP gateway."""
+
+    server_name: str = Field(min_length=1, max_length=128)
+    tool_name: str = Field(min_length=1, max_length=128)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    request_id: str | None = Field(default=None, max_length=128)
+    conversation_id: str | None = Field(default=None, max_length=128)
+    trace_id: str | None = Field(default=None, max_length=128)
+    user_id: str | None = Field(default=None, max_length=128)
+
+
 class EvalCase(ContractModel):
     """Golden-case contract for RAG and end-to-end P1 evaluation."""
 

@@ -13,6 +13,7 @@ from typing import Any, Callable, Iterator
 from config import settings
 from core.logging_config import configure_logging, fingerprint, log_event
 from core.memory import MemoryManager
+from core.mcp_gateway import McpGatewayError, McpServerRegistry, McpToolGateway
 from core.observability import (
     bind_observation_context,
     new_trace_id,
@@ -92,6 +93,25 @@ class ConversationRuntime:
             log_event(self.logger, 30, "configuration_warning", warning=warning)
         self.memory_mgr = memory_mgr or MemoryManager()
         self.tool_registry = build_default_tool_registry()
+        self.mcp_gateway: McpToolGateway | None = None
+        # Inject MCP only into the canonical application runtime. Tests and
+        # callers supplying a custom workflow retain deterministic local tools.
+        if workflow is None and settings.enable_mcp and settings.local_mcp_server == "stdio":
+            gateway: McpToolGateway | None = None
+            try:
+                gateway = McpToolGateway(McpServerRegistry.from_settings(logger=self.logger), logger=self.logger)
+                gateway.register_into(self.tool_registry)
+                self.mcp_gateway = gateway
+            except (McpGatewayError, OSError, ValueError, ImportError) as exc:
+                if gateway is not None:
+                    gateway.close()
+                log_event(
+                    self.logger,
+                    30,
+                    "mcp_gateway_unavailable",
+                    error_type=type(exc).__name__,
+                    fallback="local_tool_registry",
+                )
         self.store = store or ConversationStore()
         self.workflow = workflow or create_workflow(
             memory_mgr=self.memory_mgr,
