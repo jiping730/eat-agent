@@ -28,6 +28,7 @@ from core.observability import (
 )
 from core.persistence import ConversationStore
 from core.redis_support import RedisCoordinator
+from core.safety_guard import SafetyGuard, safety_summary
 from core.streaming import StreamCancelled, StreamEmitter
 from core.tool_registry import build_default_tool_registry
 from core.workflow import create_workflow
@@ -46,6 +47,8 @@ class ConversationResponse:
     request_id: str | None = None
     message_id: int | None = None
     grill: dict[str, Any] = field(default_factory=dict)
+    safety: dict[str, Any] = field(default_factory=dict)
+    sources: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -60,6 +63,8 @@ class ConversationResponse:
             "request_id": self.request_id,
             "message_id": self.message_id,
             "grill": self.grill,
+            "safety": self.safety,
+            "sources": self.sources,
         }
 
     @classmethod
@@ -76,6 +81,8 @@ class ConversationResponse:
             request_id=payload.get("request_id"),
             message_id=payload.get("message_id"),
             grill=dict(payload.get("grill", {})),
+            safety=dict(payload.get("safety", {})),
+            sources=list(payload.get("sources", [])),
         )
 
 
@@ -91,7 +98,10 @@ class ConversationRuntime:
         self.logger = configure_logging(settings.log_level)
         for warning in settings.startup_warnings():
             log_event(self.logger, 30, "configuration_warning", warning=warning)
-        self.memory_mgr = memory_mgr or MemoryManager()
+        self.store = store or ConversationStore()
+        self.memory_mgr = memory_mgr or MemoryManager(store=self.store)
+        if memory_mgr is not None and hasattr(self.memory_mgr, "set_store"):
+            self.memory_mgr.set_store(self.store)
         self.tool_registry = build_default_tool_registry()
         self.mcp_gateway: McpToolGateway | None = None
         # Inject MCP only into the canonical application runtime. Tests and
@@ -112,7 +122,6 @@ class ConversationRuntime:
                     error_type=type(exc).__name__,
                     fallback="local_tool_registry",
                 )
-        self.store = store or ConversationStore()
         self.workflow = workflow or create_workflow(
             memory_mgr=self.memory_mgr,
             tool_registry=self.tool_registry,
@@ -322,9 +331,19 @@ class ConversationRuntime:
         if cancel_event is not None and cancel_event.is_set():
             raise StreamCancelled("stream cancelled by client")
         snapshot = self.store.load(conversation_id, user_id)
+        input_safety = SafetyGuard.inspect_user_input(question)
+        # Never put direct identifiers or credentials into the workflow state
+        # or durable conversation history.  The original text is not needed
+        # for the routing contract after redaction.
+        question = input_safety.sanitized_text
         user_message = {"role": "user", "content": question}
+        history = history_messages if history_messages is not None else snapshot.messages
+        safe_history: list[dict[str, Any]] = []
+        for message in history:
+            safe_content, _ = SafetyGuard.redact(str(message.get("content", "")))
+            safe_history.append({**message, "content": safe_content})
         initial_state: dict[str, Any] = {
-            "messages": [*(history_messages if history_messages is not None else snapshot.messages), user_message],
+            "messages": [*safe_history, user_message],
             "user_id": user_id,
             "memory_context": [],
             "current_goal": snapshot.current_goal or "",
@@ -342,6 +361,7 @@ class ConversationRuntime:
             "request_id": request_id,
             "conversation_id": conversation_id,
             "trace_id": trace_id,
+            "safety": input_safety.model_dump(mode="json"),
         }
         if stream_emit is not None:
             initial_state["stream_emit"] = stream_emit
@@ -403,8 +423,14 @@ class ConversationRuntime:
             "reject": "rejection",
             "switch": "clarification",
             "multi_task": "clarification",
+            "safety_refusal": "safety",
         }.get(grill_action, "answer")
         target_field = grill_result.get("target_field")
+        source_map = final_state.get("tool_sources", {}) or {}
+        sources: list[dict[str, Any]] = []
+        for values in source_map.values() if isinstance(source_map, dict) else []:
+            if isinstance(values, list):
+                sources.extend(item for item in values if isinstance(item, dict))
         response = ConversationResponse(
             answer=answer,
             type=response_type,
@@ -416,6 +442,8 @@ class ConversationRuntime:
             conversation_id=conversation_id,
             request_id=request_id,
             grill=grill_result,
+            safety=safety_summary(final_state.get("safety", input_safety.model_dump(mode="json"))),
+            sources=sources,
         )
 
         message_id = self.store.save_turn(

@@ -12,10 +12,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import (
-    JSON,
+    Boolean,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -150,6 +152,31 @@ class IdempotencyRecord(Base):
     __table_args__ = (UniqueConstraint("conversation_id", "request_id", name="uq_idempotency_conversation_request"),)
 
 
+class MemoryConsentRecord(Base):
+    """Explicit per-user consent for durable assistant memory."""
+
+    __tablename__ = "memory_consents"
+
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    granted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class UserMemoryRecord(Base):
+    """User-owned memory records that can be exported or erased."""
+
+    __tablename__ = "user_memories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    user_input: Mapped[str] = mapped_column(Text, nullable=False)
+    assistant_output: Mapped[str] = mapped_column(Text, nullable=False)
+    quality: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
 @dataclass(frozen=True)
 class ConversationSnapshot:
     conversation_id: str
@@ -223,6 +250,90 @@ class ConversationStore:
             token = session.scalar(select(RefreshTokenRecord).where(RefreshTokenRecord.token_hash == token_hash))
             if token is not None:
                 token.revoked_at = utc_now()
+
+    def get_memory_consent(self, user_id: str) -> bool:
+        """Return explicit consent; absence is always treated as denied."""
+
+        with self.session_factory() as session:
+            record = session.get(MemoryConsentRecord, user_id)
+            return bool(record and record.granted)
+
+    def set_memory_consent(self, user_id: str, granted: bool) -> bool:
+        """Set consent and erase durable memories when consent is withdrawn."""
+
+        with self.session_factory.begin() as session:
+            record = session.get(MemoryConsentRecord, user_id)
+            if record is None:
+                session.add(MemoryConsentRecord(user_id=user_id, granted=bool(granted), updated_at=utc_now()))
+            else:
+                record.granted = bool(granted)
+                record.updated_at = utc_now()
+            if not granted:
+                session.execute(delete(UserMemoryRecord).where(UserMemoryRecord.user_id == user_id))
+        return bool(granted)
+
+    def save_memory(
+        self,
+        *,
+        user_id: str,
+        user_input: str,
+        assistant_output: str,
+        quality: float = 1.0,
+    ) -> int | None:
+        """Persist one record only after explicit user consent."""
+
+        with self.session_factory.begin() as session:
+            consent = session.get(MemoryConsentRecord, user_id)
+            if consent is None or not consent.granted:
+                return None
+            record = UserMemoryRecord(
+                user_id=user_id,
+                user_input=user_input,
+                assistant_output=assistant_output,
+                quality=max(0.0, min(1.0, float(quality))),
+                created_at=utc_now(),
+            )
+            session.add(record)
+            session.flush()
+            return record.id
+
+    def list_memory(self, user_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+        """Export only records belonging to the requesting user."""
+
+        with self.session_factory() as session:
+            records = session.scalars(
+                select(UserMemoryRecord)
+                .where(UserMemoryRecord.user_id == user_id)
+                .order_by(UserMemoryRecord.created_at.asc(), UserMemoryRecord.id.asc())
+                .limit(max(1, min(limit, 1_000)))
+            ).all()
+            return [
+                {
+                    "id": record.id,
+                    "input": record.user_input,
+                    "output": record.assistant_output,
+                    "quality": record.quality,
+                    "created_at": _as_utc(record.created_at).isoformat(),
+                }
+                for record in records
+            ]
+
+    def export_memory(self, user_id: str) -> dict[str, Any]:
+        return {"user_id": user_id, "consent": self.get_memory_consent(user_id), "items": self.list_memory(user_id)}
+
+    def delete_memory(self, user_id: str, *, revoke_consent: bool = True) -> int:
+        """Delete the user's durable memory and optionally revoke consent."""
+
+        with self.session_factory.begin() as session:
+            result: Any = session.execute(delete(UserMemoryRecord).where(UserMemoryRecord.user_id == user_id))
+            if revoke_consent:
+                record = session.get(MemoryConsentRecord, user_id)
+                if record is None:
+                    session.add(MemoryConsentRecord(user_id=user_id, granted=False, updated_at=utc_now()))
+                else:
+                    record.granted = False
+                    record.updated_at = utc_now()
+            return int(result.rowcount or 0)
 
     def list_conversations(self, user_id: str) -> list[ConversationRecord]:
         with self.session_factory() as session:

@@ -78,6 +78,10 @@ class AskRequest(BaseModel):
     user_id: str | None = Field(default=None, max_length=128)
 
 
+class MemoryConsentRequest(BaseModel):
+    granted: bool
+
+
 class MessageFeedbackRequest(BaseModel):
     rating: Literal["up", "down"]
     comment: str | None = Field(default=None, max_length=2_000)
@@ -96,3 +100,5 @@ class AskResponse(BaseModel):
     conversation_id: str | None = None
     request_id: str | None = None
     grill: dict[str, Any] = Field(default_factory=dict)
+    safety: dict[str, Any] = Field(default_factory=dict)
+    sources: list[dict[str, Any]] = Field(default_factory=list)

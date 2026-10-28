@@ -45,6 +45,7 @@ from front.schemas import (
     CredentialsRequest,
     ErrorResponse,
     LogoutRequest,
+    MemoryConsentRequest,
     MessageFeedbackRequest,
     RefreshRequest,
     TokenResponse,
@@ -353,6 +354,36 @@ def me(request: Request):
     if user is None:
         return _error_response(request, "用户不存在", 404, "user_not_found")
     return {"id": user.id, "username": user.username, "roles": user.roles or []}
+
+
+@app.post("/memory/consent")
+@app.post("/me/memory/consent")
+def update_memory_consent(data: MemoryConsentRequest, request: Request):
+    """Store explicit user consent; withdrawing it erases durable memory."""
+
+    user_id = _platform_user_id(request)
+    granted = runtime.memory_mgr.set_consent(user_id, data.granted)
+    log_event(logger, 20, "memory_consent_updated", user=fingerprint(user_id), granted=granted)
+    return {"status": "updated", "granted": granted}
+
+
+@app.get("/memory")
+@app.get("/memory/export")
+@app.get("/me/memory/export")
+def export_memory(request: Request):
+    user_id = _platform_user_id(request)
+    payload = runtime.memory_mgr.export_user_memory(user_id)
+    payload["user_id"] = user_id
+    return payload
+
+
+@app.delete("/memory")
+@app.delete("/me/memory")
+def delete_memory(request: Request):
+    user_id = _platform_user_id(request)
+    deleted = runtime.memory_mgr.delete_user_memory(user_id, revoke_consent=True)
+    log_event(logger, 20, "memory_deleted", user=fingerprint(user_id), record_count=deleted)
+    return {"status": "deleted", "deleted_count": deleted, "consent": False}
 
 
 @app.get("/conversations", response_model=ConversationListResponse)
