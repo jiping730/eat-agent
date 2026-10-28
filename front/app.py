@@ -25,6 +25,7 @@ from config import settings
 from core.auth import AuthenticationError, AuthPrincipal, AuthService, hash_refresh_token
 from core.conversation_runtime import ConversationRuntime
 from core.knowledge_base import KnowledgeBaseService
+from core.personal_knowledge import PersonalKnowledgeService
 from core.logging_config import configure_logging, fingerprint, log_event
 from core.observability import (
     bind_observation_context,
@@ -58,6 +59,8 @@ from front.schemas import (
     KnowledgeDocumentListResponse,
     KnowledgeDocumentUploadRequest,
     KnowledgeRetrievalTestRequest,
+    PersonalKnowledgeRetrievalTestRequest,
+    PersonalKnowledgeTextRequest,
     KnowledgeReviewRequest,
     KnowledgeRollbackRequest,
     ProfileConsentRequest,
@@ -96,6 +99,7 @@ if startup_errors:
 configure_optional_observability()
 runtime = ConversationRuntime()
 knowledge_service = KnowledgeBaseService(runtime.store)
+personal_knowledge_service = PersonalKnowledgeService(runtime.store, knowledge_service=knowledge_service)
 profile_service = ProfileService(runtime.store)
 tenant_service = TenantService(runtime.store)
 auth_service = AuthService()
@@ -117,6 +121,7 @@ PUBLIC_PATHS = {
     "/openapi.json",
     "/admin/knowledge",
     "/profile",
+    "/me/knowledge",
 }
 
 
@@ -144,6 +149,13 @@ def _platform_user_id(request: Request, data: dict | None = None) -> str:
         return principal.user_id
 
     requested_user_id = (data or {}).get("user_id") or request.headers.get("X-User-ID")
+    # A service API key is itself the verified identity.  This keeps API-key
+    # admin and health workflows usable without requiring a synthetic
+    # X-User-ID header; callers that need user-scoped data can still provide
+    # the compatibility header explicitly.
+    if principal and principal.auth_type == "api_key" and not requested_user_id:
+        return principal.user_id
+
     if not isinstance(requested_user_id, str) or not requested_user_id.strip():
         raise ValueError("缺少用户身份")
     return requested_user_id.strip()
@@ -325,6 +337,11 @@ def index(request: Request):
 @app.get("/admin/knowledge", include_in_schema=False)
 def knowledge_admin_page(request: Request):
     return templates.TemplateResponse(request=request, name="knowledge.html", context={})
+
+
+@app.get("/me/knowledge", include_in_schema=False)
+def personal_knowledge_page(request: Request):
+    return templates.TemplateResponse(request=request, name="personal_knowledge.html", context={})
 
 
 @app.get("/profile", include_in_schema=False)
@@ -578,6 +595,56 @@ def delete_profile(request: Request):
     user_id = _platform_user_id(request)
     tenant_id = _tenant_context(request, user_id).tenant_id
     return profile_service.delete(user_id, actor=user_id, tenant_id=tenant_id)
+
+
+@app.get("/me/knowledge/documents")
+def list_personal_knowledge_documents(request: Request):
+    user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    return {"items": personal_knowledge_service.list_documents(user_id=user_id, tenant_id=tenant_id)}
+
+
+@app.post("/me/knowledge/documents", status_code=201)
+def import_personal_knowledge(data: PersonalKnowledgeTextRequest, request: Request):
+    user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    return personal_knowledge_service.import_text(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        source_name=data.source_name,
+        content=data.content,
+        title=data.title,
+    )
+
+
+@app.delete("/me/knowledge/documents/{document_id}")
+def delete_personal_knowledge(document_id: str, request: Request):
+    user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    return personal_knowledge_service.delete_document(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        document_id=document_id,
+    )
+
+
+@app.get("/me/knowledge/index/status")
+def personal_knowledge_index_status(request: Request):
+    user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    return personal_knowledge_service.index_status(user_id=user_id, tenant_id=tenant_id)
+
+
+@app.post("/me/knowledge/retrieval/test")
+def test_personal_knowledge_retrieval(data: PersonalKnowledgeRetrievalTestRequest, request: Request):
+    user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    return personal_knowledge_service.retrieval_test(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        query=data.query,
+        top_k=data.top_k,
+    )
 
 
 @app.get("/admin/knowledge/documents", response_model=KnowledgeDocumentListResponse)

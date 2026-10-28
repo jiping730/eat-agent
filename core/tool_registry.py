@@ -539,23 +539,47 @@ def retrieve_knowledge_result(
     score_threshold: float = 2.0,
     access_groups: set[str] | None = None,
     tenant_id: str | None = None,
+    user_id: str | None = None,
 ) -> ToolResult:
     """Run local retrieval and preserve document provenance."""
 
     try:
-        index_dir = None
-        source_dir = None
+        index_targets: list[tuple[str | None, set[str] | None, str]] = []
         if tenant_id:
             safe_tenant_id = "".join(char for char in str(tenant_id) if char.isalnum() or char in {"-", "_"})
-            index_dir = str(Path(settings.vector_store_path) / "tenants" / safe_tenant_id)
-            source_dir = index_dir
-        retriever = get_retriever_with_score(
-            score_threshold=score_threshold,
-            access_groups=access_groups,
-            index_dir=index_dir,
-            source_dir=source_dir,
-        )
-        docs = retriever(query)
+            tenant_index = str(Path(settings.vector_store_path) / "tenants" / safe_tenant_id)
+            index_targets.append((tenant_index, access_groups, "tenant"))
+            if user_id:
+                safe_user_id = "".join(char for char in str(user_id) if char.isalnum() or char in {"-", "_"})
+                personal_index = str(Path(tenant_index) / "personal" / safe_user_id)
+                index_targets.append((personal_index, {"personal"}, "personal"))
+        else:
+            index_targets.append((None, access_groups, "tenant"))
+
+        documents_by_key: dict[str, Any] = {}
+        for index_dir, groups, scope in index_targets:
+            retriever = get_retriever_with_score(
+                score_threshold=score_threshold,
+                access_groups=groups,
+                index_dir=index_dir,
+                source_dir=index_dir,
+            )
+            for doc in retriever(query):
+                metadata = dict(getattr(doc, "metadata", {}) or {})
+                metadata.setdefault("scope", scope)
+                key = str(metadata.get("chunk_id") or metadata.get("content_hash") or doc.page_content)
+                current = documents_by_key.get(key)
+                if current is None or float(metadata.get("retrieval_score") or 0) > float(
+                    (getattr(current, "metadata", {}) or {}).get("retrieval_score") or 0
+                ):
+                    from langchain_core.documents import Document
+
+                    documents_by_key[key] = Document(page_content=doc.page_content, metadata=metadata)
+        docs = sorted(
+            documents_by_key.values(),
+            key=lambda item: float((getattr(item, "metadata", {}) or {}).get("retrieval_score") or 0),
+            reverse=True,
+        )[:4]
     except Exception as exc:
         raise ToolTransientError("知识库暂时不可用") from exc
 
@@ -568,7 +592,8 @@ def retrieve_knowledge_result(
         source = metadata.get("source") or metadata.get("file_path") or "local_knowledge_base"
         sources.append(
             {
-                "type": "knowledge_base",
+                "type": "personal_knowledge" if metadata.get("scope") == "personal" else "knowledge_base",
+                "scope": metadata.get("scope", "tenant"),
                 "source": str(source),
                 "title": metadata.get("title"),
                 "document_id": metadata.get("document_id"),
@@ -640,6 +665,7 @@ def _retrieval_handler(query: str, context: Mapping[str, Any]) -> ToolResult:
         query,
         access_groups=set(access_groups) if access_groups else None,
         tenant_id=str(context.get("tenant_id")) if context.get("tenant_id") else None,
+        user_id=str(context.get("user_id")) if context.get("user_id") else None,
     )
 
 
@@ -662,6 +688,7 @@ def _calorie_handler(query: str, context: Mapping[str, Any]) -> ToolResult:
         query,
         access_groups=set(access_groups) if access_groups else None,
         tenant_id=str(context.get("tenant_id")) if context.get("tenant_id") else None,
+        user_id=str(context.get("user_id")) if context.get("user_id") else None,
     )
 
 

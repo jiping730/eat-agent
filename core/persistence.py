@@ -324,6 +324,9 @@ class KnowledgeDocumentRecord(Base):
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     tenant_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
+    scope: Mapped[str] = mapped_column(String(32), index=True, nullable=False, default="tenant", server_default="tenant")
+    owner_user_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source_name: Mapped[str] = mapped_column(String(256), index=True, nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(String(32), index=True, nullable=False, default="draft")
@@ -339,7 +342,15 @@ class KnowledgeDocumentRecord(Base):
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
     )
 
-    __table_args__ = (UniqueConstraint("tenant_id", "source_name", name="uq_knowledge_tenant_source_name"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "scope",
+            "owner_user_id",
+            "source_name",
+            name="uq_knowledge_scope_owner_source_name",
+        ),
+    )
 
 
 class KnowledgeDocumentVersionRecord(Base):
@@ -368,6 +379,8 @@ class KnowledgeBuildRecord(Base):
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     tenant_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
+    scope: Mapped[str] = mapped_column(String(32), index=True, nullable=False, default="tenant", server_default="tenant")
+    owner_user_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
     index_version: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     status: Mapped[str] = mapped_column(String(32), index=True, nullable=False, default="building")
     phase: Mapped[str] = mapped_column(String(64), nullable=False, default="preparing")
@@ -387,6 +400,8 @@ class KnowledgeRetrievalEventRecord(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     tenant_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
+    scope: Mapped[str] = mapped_column(String(32), index=True, nullable=False, default="tenant", server_default="tenant")
+    owner_user_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
     query: Mapped[str] = mapped_column(String(2_000), nullable=False)
     access_groups: Mapped[list[str]] = mapped_column(JSON, default=lambda: ["public"], nullable=False)
     result_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -456,8 +471,16 @@ class ConversationStore:
                     if column.name in existing:
                         continue
                     column_type = column.type.compile(dialect=self.engine.dialect)
+                    default_sql = ""
+                    if not column.nullable and column.server_default is not None:
+                        default_value = getattr(column.server_default, "arg", None)
+                        if isinstance(default_value, str):
+                            escaped = default_value.replace("'", "''")
+                            default_sql = f" DEFAULT '{escaped}'"
+                        elif default_value is not None:
+                            default_sql = f" DEFAULT {default_value}"
                     connection.exec_driver_sql(
-                        f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {column_type}'
+                        f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {column_type}{default_sql}'
                     )
                     existing.add(column.name)
             connection.exec_driver_sql(

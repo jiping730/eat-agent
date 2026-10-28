@@ -29,11 +29,12 @@ from core.persistence import (
     utc_now,
 )
 from rag.ingestion import active_version, ingest_document_entries, publish_version, rollback_version
-from rag.retriever import retrieve_with_contract
+from rag.retriever import retrieve_with_contract, rewrite_query
 
 _SOURCE_NAME_RE = re.compile(r"^[^\\/:*?\"<>|\x00]+$")
 _ALLOWED_SUFFIXES = {".md", ".txt"}
-_DOCUMENT_STATUSES = {"draft", "approved", "rejected", "published", "unpublished"}
+_DOCUMENT_STATUSES = {"draft", "approved", "rejected", "published", "unpublished", "deleted"}
+_KNOWLEDGE_SCOPES = {"tenant", "personal"}
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -62,13 +63,34 @@ class KnowledgeBaseService:
         self.store = store
         self.index_dir = Path(index_dir or settings.vector_store_path)
 
-    def _index_path(self, tenant_id: str | None) -> Path:
-        """Use one versioned corpus directory per tenant."""
+    def _index_path(
+        self,
+        tenant_id: str | None,
+        *,
+        scope: str = "tenant",
+        owner_user_id: str | None = None,
+    ) -> Path:
+        """Use separate versioned corpora for tenant and personal knowledge."""
 
         if not tenant_id:
             return self.index_dir
         safe_tenant_id = "".join(char for char in str(tenant_id) if char.isalnum() or char in {"-", "_"})
-        return self.index_dir / "tenants" / safe_tenant_id
+        base = self.index_dir / "tenants" / safe_tenant_id
+        if scope == "personal":
+            if not owner_user_id:
+                raise ValueError("个人知识索引缺少用户身份")
+            safe_user_id = "".join(char for char in str(owner_user_id) if char.isalnum() or char in {"-", "_"})
+            return base / "personal" / safe_user_id
+        return base
+
+    @staticmethod
+    def _validate_scope(scope: str, owner_user_id: str | None) -> None:
+        if scope not in _KNOWLEDGE_SCOPES:
+            raise ValueError("知识范围不合法")
+        if scope == "personal" and not owner_user_id:
+            raise ValueError("个人知识必须绑定用户")
+        if scope == "tenant" and owner_user_id is not None:
+            raise ValueError("租户知识不能绑定个人用户")
 
     @staticmethod
     def validate_source_name(source_name: str) -> str:
@@ -84,6 +106,9 @@ class KnowledgeBaseService:
         return {
             "id": document.id,
             "tenant_id": document.tenant_id,
+            "scope": document.scope,
+            "owner_user_id": document.owner_user_id,
+            "deleted_at": _iso(document.deleted_at),
             "source_name": document.source_name,
             "title": document.title,
             "status": document.status,
@@ -113,6 +138,8 @@ class KnowledgeBaseService:
         return {
             "id": build.id,
             "tenant_id": build.tenant_id,
+            "scope": build.scope,
+            "owner_user_id": build.owner_user_id,
             "index_version": build.index_version,
             "status": build.status,
             "phase": build.phase,
@@ -134,7 +161,11 @@ class KnowledgeBaseService:
         title: str | None = None,
         access_groups: Iterable[str] | None = None,
         tenant_id: str | None = None,
+        scope: str = "tenant",
+        owner_user_id: str | None = None,
+        publish_immediately: bool = False,
     ) -> dict[str, Any]:
+        self._validate_scope(scope, owner_user_id)
         source_name = self.validate_source_name(source_name)
         if not isinstance(content, str) or not content.strip():
             raise ValueError("文档内容不能为空")
@@ -149,18 +180,24 @@ class KnowledgeBaseService:
                 select(KnowledgeDocumentRecord).where(
                     KnowledgeDocumentRecord.source_name == source_name,
                     KnowledgeDocumentRecord.tenant_id == tenant_id,
+                    KnowledgeDocumentRecord.scope == scope,
+                    KnowledgeDocumentRecord.owner_user_id == owner_user_id,
                 )
             )
             now = utc_now()
+            status = "published" if publish_immediately else "draft"
             if document is None:
                 document = KnowledgeDocumentRecord(
                     id=str(uuid.uuid4()),
                     tenant_id=tenant_id,
+                    scope=scope,
+                    owner_user_id=owner_user_id,
+                    deleted_at=None,
                     source_name=source_name,
                     title=normalized_title,
-                    status="draft",
+                    status=status,
                     latest_version=1,
-                    published_version=None,
+                    published_version=1 if publish_immediately else None,
                     access_groups=normalized_groups,
                     created_by=actor,
                     updated_by=actor,
@@ -173,7 +210,9 @@ class KnowledgeBaseService:
                 version = document.latest_version + 1
                 document.latest_version = version
                 document.title = normalized_title
-                document.status = "draft"
+                document.status = status
+                document.published_version = version if publish_immediately else document.published_version
+                document.deleted_at = None
                 document.access_groups = normalized_groups
                 document.updated_by = actor
                 document.reviewed_by = None
@@ -192,25 +231,48 @@ class KnowledgeBaseService:
                 )
             )
             document_id = document.id
-        return self.get_document(document_id, tenant_id)
+        return self.get_document(document_id, tenant_id, scope=scope, owner_user_id=owner_user_id)
 
-    def list_documents(self, *, status: str | None = None, tenant_id: str | None = None) -> list[dict[str, Any]]:
+    def list_documents(
+        self,
+        *,
+        status: str | None = None,
+        tenant_id: str | None = None,
+        scope: str = "tenant",
+        owner_user_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        self._validate_scope(scope, owner_user_id)
         if status is not None and status not in _DOCUMENT_STATUSES:
             raise ValueError("文档状态不合法")
         with self.store.session_factory() as session:
             query = select(KnowledgeDocumentRecord).order_by(KnowledgeDocumentRecord.updated_at.desc())
-            query = query.where(KnowledgeDocumentRecord.tenant_id == tenant_id)
+            query = query.where(
+                KnowledgeDocumentRecord.tenant_id == tenant_id,
+                KnowledgeDocumentRecord.scope == scope,
+                KnowledgeDocumentRecord.owner_user_id == owner_user_id,
+                KnowledgeDocumentRecord.deleted_at.is_(None),
+            )
             if status:
                 query = query.where(KnowledgeDocumentRecord.status == status)
             documents = session.scalars(query).all()
             return [self._document_payload(document, []) for document in documents]
 
-    def get_document(self, document_id: str, tenant_id: str | None = None) -> dict[str, Any]:
+    def get_document(
+        self,
+        document_id: str,
+        tenant_id: str | None = None,
+        *,
+        scope: str = "tenant",
+        owner_user_id: str | None = None,
+    ) -> dict[str, Any]:
+        self._validate_scope(scope, owner_user_id)
         with self.store.session_factory() as session:
             document = session.scalar(
                 select(KnowledgeDocumentRecord).where(
                     KnowledgeDocumentRecord.id == document_id,
                     KnowledgeDocumentRecord.tenant_id == tenant_id,
+                    KnowledgeDocumentRecord.scope == scope,
+                    KnowledgeDocumentRecord.owner_user_id == owner_user_id,
                 )
             )
             if document is None:
@@ -233,12 +295,19 @@ class KnowledgeBaseService:
         approved: bool,
         note: str | None = None,
         tenant_id: str | None = None,
+        scope: str = "tenant",
+        owner_user_id: str | None = None,
     ) -> dict[str, Any]:
+        self._validate_scope(scope, owner_user_id)
+        if scope != "tenant":
+            raise ValueError("个人文档不需要审核")
         with self.store.session_factory.begin() as session:
             document = session.scalar(
                 select(KnowledgeDocumentRecord).where(
                     KnowledgeDocumentRecord.id == document_id,
                     KnowledgeDocumentRecord.tenant_id == tenant_id,
+                    KnowledgeDocumentRecord.scope == scope,
+                    KnowledgeDocumentRecord.owner_user_id == owner_user_id,
                 )
             )
             if document is None:
@@ -250,13 +319,25 @@ class KnowledgeBaseService:
             document.review_note = (note or "").strip()[:2_000] or None
             document.updated_by = actor
             document.updated_at = utc_now()
-        return self.get_document(document_id, tenant_id)
+        return self.get_document(document_id, tenant_id, scope=scope, owner_user_id=owner_user_id)
 
-    def _release_entries(self, tenant_id: str | None = None) -> list[dict[str, Any]]:
+    def _release_entries(
+        self,
+        tenant_id: str | None = None,
+        *,
+        scope: str = "tenant",
+        owner_user_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        self._validate_scope(scope, owner_user_id)
         entries: list[dict[str, Any]] = []
         with self.store.session_factory() as session:
             documents = session.scalars(
-                select(KnowledgeDocumentRecord).where(KnowledgeDocumentRecord.tenant_id == tenant_id)
+                select(KnowledgeDocumentRecord).where(
+                    KnowledgeDocumentRecord.tenant_id == tenant_id,
+                    KnowledgeDocumentRecord.scope == scope,
+                    KnowledgeDocumentRecord.owner_user_id == owner_user_id,
+                    KnowledgeDocumentRecord.deleted_at.is_(None),
+                )
             ).all()
             for document in documents:
                 if document.status == "unpublished":
@@ -278,6 +359,8 @@ class KnowledgeBaseService:
                         "source": document.source_name,
                         "title": document.title,
                         "document_id": document.id,
+                        "scope": document.scope,
+                        "version": version_number,
                         "access_groups": list(document.access_groups or ["public"]),
                     }
                 )
@@ -292,9 +375,17 @@ class KnowledgeBaseService:
                 setattr(build, key, value)
             return self._build_payload(build)
 
-    def build_index(self, *, actor: str, tenant_id: str | None = None) -> dict[str, Any]:
+    def build_index(
+        self,
+        *,
+        actor: str,
+        tenant_id: str | None = None,
+        scope: str = "tenant",
+        owner_user_id: str | None = None,
+    ) -> dict[str, Any]:
         """Build and publish one complete corpus synchronously with progress."""
 
+        self._validate_scope(scope, owner_user_id)
         with self._build_lock:
             build_id = str(uuid.uuid4())
             index_version = f"kb-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{build_id[:8]}"
@@ -303,6 +394,8 @@ class KnowledgeBaseService:
                     KnowledgeBuildRecord(
                         id=build_id,
                         tenant_id=tenant_id,
+                        scope=scope,
+                        owner_user_id=owner_user_id,
                         index_version=index_version,
                         status="building",
                         phase="preparing",
@@ -312,7 +405,7 @@ class KnowledgeBaseService:
                     )
                 )
             try:
-                entries = self._release_entries(tenant_id)
+                entries = self._release_entries(tenant_id, scope=scope, owner_user_id=owner_user_id)
                 self._set_build(
                     build_id,
                     phase="collecting",
@@ -320,7 +413,7 @@ class KnowledgeBaseService:
                     document_count=len(entries),
                 )
                 manifest = ingest_document_entries(
-                    self._index_path(tenant_id),
+                    self._index_path(tenant_id, scope=scope, owner_user_id=owner_user_id),
                     entries,
                     version=index_version,
                     publish=False,
@@ -332,12 +425,15 @@ class KnowledgeBaseService:
                     document_count=int(manifest.get("document_count", len(entries))),
                     chunk_count=int(manifest.get("chunk_count", 0)),
                 )
-                publish_version(self._index_path(tenant_id), index_version)
+                publish_version(self._index_path(tenant_id, scope=scope, owner_user_id=owner_user_id), index_version)
                 with self.store.session_factory.begin() as session:
                     approved = session.scalars(
                         select(KnowledgeDocumentRecord).where(
                             KnowledgeDocumentRecord.status == "approved",
                             KnowledgeDocumentRecord.tenant_id == tenant_id,
+                            KnowledgeDocumentRecord.scope == scope,
+                            KnowledgeDocumentRecord.owner_user_id == owner_user_id,
+                            KnowledgeDocumentRecord.deleted_at.is_(None),
                         )
                     ).all()
                     for document in approved:
@@ -350,7 +446,7 @@ class KnowledgeBaseService:
                         build.phase = "completed"
                         build.progress = 100
                         build.finished_at = utc_now()
-                return self.get_build(build_id, tenant_id)
+                return self.get_build(build_id, tenant_id, scope=scope, owner_user_id=owner_user_id)
             except Exception as exc:
                 self._set_build(
                     build_id,
@@ -362,23 +458,45 @@ class KnowledgeBaseService:
                 )
                 raise
 
-    def get_build(self, build_id: str, tenant_id: str | None = None) -> dict[str, Any]:
+    def get_build(
+        self,
+        build_id: str,
+        tenant_id: str | None = None,
+        *,
+        scope: str = "tenant",
+        owner_user_id: str | None = None,
+    ) -> dict[str, Any]:
+        self._validate_scope(scope, owner_user_id)
         with self.store.session_factory() as session:
             build = session.scalar(
                 select(KnowledgeBuildRecord).where(
                     KnowledgeBuildRecord.id == build_id,
                     KnowledgeBuildRecord.tenant_id == tenant_id,
+                    KnowledgeBuildRecord.scope == scope,
+                    KnowledgeBuildRecord.owner_user_id == owner_user_id,
                 )
             )
             if build is None:
                 raise KeyError("索引构建任务不存在")
             return self._build_payload(build)
 
-    def list_builds(self, *, limit: int = 20, tenant_id: str | None = None) -> list[dict[str, Any]]:
+    def list_builds(
+        self,
+        *,
+        limit: int = 20,
+        tenant_id: str | None = None,
+        scope: str = "tenant",
+        owner_user_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        self._validate_scope(scope, owner_user_id)
         with self.store.session_factory() as session:
             builds = session.scalars(
                 select(KnowledgeBuildRecord)
-                .where(KnowledgeBuildRecord.tenant_id == tenant_id)
+                .where(
+                    KnowledgeBuildRecord.tenant_id == tenant_id,
+                    KnowledgeBuildRecord.scope == scope,
+                    KnowledgeBuildRecord.owner_user_id == owner_user_id,
+                )
                 .order_by(KnowledgeBuildRecord.started_at.desc())
                 .limit(max(1, min(limit, 100)))
             ).all()
@@ -423,12 +541,65 @@ class KnowledgeBaseService:
             raise
         return {"document": self.get_document(document_id, tenant_id), "build": build}
 
-    def rollback(self, target: str, *, actor: str, tenant_id: str | None = None) -> dict[str, Any]:
+    def delete_personal_document(
+        self,
+        document_id: str,
+        *,
+        actor: str,
+        tenant_id: str,
+        owner_user_id: str,
+    ) -> dict[str, Any]:
+        """Soft-delete one personal document and rebuild only its private index."""
+
+        with self.store.session_factory.begin() as session:
+            document = session.scalar(
+                select(KnowledgeDocumentRecord).where(
+                    KnowledgeDocumentRecord.id == document_id,
+                    KnowledgeDocumentRecord.tenant_id == tenant_id,
+                    KnowledgeDocumentRecord.scope == "personal",
+                    KnowledgeDocumentRecord.owner_user_id == owner_user_id,
+                    KnowledgeDocumentRecord.deleted_at.is_(None),
+                )
+            )
+            if document is None:
+                raise KeyError("个人知识文档不存在")
+            document.deleted_at = utc_now()
+            document.status = "deleted"
+            document.updated_by = actor
+            document.updated_at = utc_now()
+        build = self.build_index(
+            actor=actor,
+            tenant_id=tenant_id,
+            scope="personal",
+            owner_user_id=owner_user_id,
+        )
+        return {
+            "document": self.get_document(
+                document_id,
+                tenant_id,
+                scope="personal",
+                owner_user_id=owner_user_id,
+            ),
+            "build": build,
+        }
+
+    def rollback(
+        self,
+        target: str,
+        *,
+        actor: str,
+        tenant_id: str | None = None,
+        scope: str = "tenant",
+        owner_user_id: str | None = None,
+    ) -> dict[str, Any]:
+        self._validate_scope(scope, owner_user_id)
         with self.store.session_factory() as session:
             build = session.scalar(
                 select(KnowledgeBuildRecord).where(
                     KnowledgeBuildRecord.id == target,
                     KnowledgeBuildRecord.tenant_id == tenant_id,
+                    KnowledgeBuildRecord.scope == scope,
+                    KnowledgeBuildRecord.owner_user_id == owner_user_id,
                 )
             )
             if build is None:
@@ -436,15 +607,24 @@ class KnowledgeBaseService:
                     select(KnowledgeBuildRecord).where(
                         KnowledgeBuildRecord.index_version == target,
                         KnowledgeBuildRecord.tenant_id == tenant_id,
+                        KnowledgeBuildRecord.scope == scope,
+                        KnowledgeBuildRecord.owner_user_id == owner_user_id,
                     )
                 )
             if build is None or build.status == "failed":
                 raise KeyError("可回滚的索引版本不存在")
             index_version = build.index_version
-        rollback_version(self._index_path(tenant_id), index_version)
+        rollback_version(
+            self._index_path(tenant_id, scope=scope, owner_user_id=owner_user_id),
+            index_version,
+        )
         with self.store.session_factory.begin() as session:
             builds = session.scalars(
-                select(KnowledgeBuildRecord).where(KnowledgeBuildRecord.tenant_id == tenant_id)
+                select(KnowledgeBuildRecord).where(
+                    KnowledgeBuildRecord.tenant_id == tenant_id,
+                    KnowledgeBuildRecord.scope == scope,
+                    KnowledgeBuildRecord.owner_user_id == owner_user_id,
+                )
             ).all()
             for item in builds:
                 if item.status == "published":
@@ -452,7 +632,7 @@ class KnowledgeBaseService:
                 if item.index_version == index_version:
                     item.status = "published"
         return {
-            "active_version": active_version(self._index_path(tenant_id)),
+            "active_version": active_version(self._index_path(tenant_id, scope=scope, owner_user_id=owner_user_id)),
             "rolled_back_to": index_version,
             "actor": actor,
         }
@@ -465,7 +645,10 @@ class KnowledgeBaseService:
         top_k: int = 4,
         access_groups: Iterable[str] | None = None,
         tenant_id: str | None = None,
+        scope: str = "tenant",
+        owner_user_id: str | None = None,
     ) -> dict[str, Any]:
+        self._validate_scope(scope, owner_user_id)
         if not query.strip():
             raise ValueError("检索问题不能为空")
         groups = _groups(access_groups)
@@ -473,13 +656,15 @@ class KnowledgeBaseService:
             query,
             top_k=max(1, min(top_k, 10)),
             access_groups=set(groups),
-            index_dir=str(self._index_path(tenant_id)),
+            index_dir=str(self._index_path(tenant_id, scope=scope, owner_user_id=owner_user_id)),
         )
         document_ids = [source.document_id for source in response.sources if source.document_id]
         with self.store.session_factory.begin() as session:
             session.add(
                 KnowledgeRetrievalEventRecord(
                     tenant_id=tenant_id,
+                    scope=scope,
+                    owner_user_id=owner_user_id,
                     query=query[:2_000],
                     access_groups=groups,
                     result_count=len(response.documents),
@@ -489,17 +674,33 @@ class KnowledgeBaseService:
                 )
             )
         return {
-            "active_version": active_version(self._index_path(tenant_id)),
+            "query": query,
+            "rewritten_query": rewrite_query(query).normalized,
+            "active_version": active_version(
+                self._index_path(tenant_id, scope=scope, owner_user_id=owner_user_id)
+            ),
             "status": response.status,
+            "no_hit_reason": "no_matching_chunk" if response.status == "no_results" else None,
             "documents": [item.model_dump() for item in response.documents],
             "sources": [item.model_dump() for item in response.sources],
         }
 
-    def analytics(self, tenant_id: str | None = None) -> dict[str, Any]:
+    def analytics(
+        self,
+        tenant_id: str | None = None,
+        *,
+        scope: str = "tenant",
+        owner_user_id: str | None = None,
+    ) -> dict[str, Any]:
+        self._validate_scope(scope, owner_user_id)
         with self.store.session_factory() as session:
             events = session.scalars(
                 select(KnowledgeRetrievalEventRecord)
-                .where(KnowledgeRetrievalEventRecord.tenant_id == tenant_id)
+                .where(
+                    KnowledgeRetrievalEventRecord.tenant_id == tenant_id,
+                    KnowledgeRetrievalEventRecord.scope == scope,
+                    KnowledgeRetrievalEventRecord.owner_user_id == owner_user_id,
+                )
                 .order_by(KnowledgeRetrievalEventRecord.created_at.desc())
                 .limit(10_000)
             ).all()
@@ -509,7 +710,9 @@ class KnowledgeBaseService:
         for event in events:
             source_counter.update(str(item) for item in (event.result_document_ids or []))
         return {
-            "active_version": active_version(self._index_path(tenant_id)),
+            "active_version": active_version(
+                self._index_path(tenant_id, scope=scope, owner_user_id=owner_user_id)
+            ),
             "total_queries": total,
             "hit_queries": hits,
             "hit_rate": round(hits / total, 4) if total else 0.0,

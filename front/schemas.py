@@ -177,6 +177,10 @@ class AskResponse(BaseModel):
     model_info: dict[str, Any] = Field(default_factory=dict)
     safety: dict[str, Any] = Field(default_factory=dict)
     sources: list[dict[str, Any]] = Field(default_factory=list)
+    mode: Literal["model", "offline", "unknown"] = "unknown"
+    reason: str = ""
+    confidence: str = ""
+    next_step: str = ""
 
 
 class ProfileSuggestionListResponse(BaseModel):
@@ -232,3 +236,18 @@ class KnowledgeRetrievalTestRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2_000)
     top_k: int = Field(default=4, ge=1, le=10)
     access_groups: list[str] = Field(default_factory=lambda: ["public"], max_length=20)
+
+
+class PersonalKnowledgeTextRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_name: str = Field(min_length=1, max_length=256)
+    content: str = Field(min_length=1, max_length=1_000_000)
+    title: str | None = Field(default=None, max_length=200)
+
+
+class PersonalKnowledgeRetrievalTestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1, max_length=2_000)
+    top_k: int = Field(default=4, ge=1, le=10)

@@ -170,6 +170,14 @@ function renderResponseMetadata(wrapper, response) {
     if (settings.model && response.model_info?.display_name) {
         appendTextBlock(wrapper, 'response-meta', '模型信息', response.model_info.display_name);
     }
+    if (response.mode === 'offline') {
+        const details = [
+            `原因：${response.reason || '模型不可用'}`,
+            `可信度：${response.confidence || 'medium'}`,
+            response.next_step || '',
+        ].filter(Boolean).join('\n');
+        appendTextBlock(wrapper, 'response-safety', '离线回答', details);
+    }
     if (settings.sources && (response.sources || []).length) {
         const sourceText = response.sources.slice(0, 5).map((source) => {
             const title = source.title || source.source_name || source.document_id || '知识库来源';

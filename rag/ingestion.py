@@ -93,11 +93,13 @@ def _build_documents_from_entries(entries: Iterable[dict[str, Any]], version: st
                 Document(
                     page_content=chunk,
                     metadata={
-                        "type": "knowledge_base",
+                        "type": "personal_knowledge" if str(entry.get("scope") or "tenant") == "personal" else "knowledge_base",
+                        "scope": str(entry.get("scope") or "tenant"),
                         "source": relative_path,
                         "title": str(entry.get("title") or Path(relative_path).stem),
                         "document_id": document_id,
-                        "version": version,
+                        "version": str(entry.get("version") or version),
+                        "index_version": version,
                         "chunk_id": f"{document_id}:{index}",
                         "content_hash": content_hash,
                         "access_groups": normalized_access_groups,

@@ -27,6 +27,7 @@ from core.observability import (
     start_span,
 )
 from core.profile import ProfileService
+from core.personal_knowledge import PersonalKnowledgeService
 from core.persistence import ConversationStore
 from core.grill_engine import GrillContext, GrillEngine, get_profile
 from core.redis_support import RedisCoordinator
@@ -54,6 +55,10 @@ class ConversationResponse:
     model_info: dict[str, Any] = field(default_factory=dict)
     safety: dict[str, Any] = field(default_factory=dict)
     sources: list[dict[str, Any]] = field(default_factory=list)
+    mode: str = "unknown"
+    reason: str = ""
+    confidence: str = ""
+    next_step: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +78,10 @@ class ConversationResponse:
             "model_info": self.model_info,
             "safety": self.safety,
             "sources": self.sources,
+            "mode": self.mode,
+            "reason": self.reason,
+            "confidence": self.confidence,
+            "next_step": self.next_step,
         }
 
     @classmethod
@@ -94,6 +103,10 @@ class ConversationResponse:
             model_info=dict(payload.get("model_info", {})),
             safety=dict(payload.get("safety", {})),
             sources=list(payload.get("sources", [])),
+            mode=str(payload.get("mode", "unknown")),
+            reason=str(payload.get("reason", "")),
+            confidence=str(payload.get("confidence", "")),
+            next_step=str(payload.get("next_step", "")),
         )
 
 
@@ -111,6 +124,7 @@ class ConversationRuntime:
             log_event(self.logger, 30, "configuration_warning", warning=warning)
         self.store = store or ConversationStore()
         self.profile_service = ProfileService(self.store)
+        self.personal_knowledge_service = PersonalKnowledgeService(self.store)
         self.memory_mgr = memory_mgr or MemoryManager(store=self.store)
         if memory_mgr is not None and hasattr(self.memory_mgr, "set_store"):
             self.memory_mgr.set_store(self.store)
@@ -372,7 +386,6 @@ class ConversationRuntime:
         if action not in {"skip", "revise", "restart"}:
             raise ValueError("不支持的 Grill 操作")
         resolved_request_id = request_id or str(uuid.uuid4())
-        resolved_trace_id = trace_id or new_trace_id()
         resolved_tenant_id = self.store.resolve_tenant_id(user_id, tenant_id)
         with self._locks[conversation_id]:
             with self.coordinator.conversation_lock(conversation_id):
@@ -509,6 +522,10 @@ class ConversationRuntime:
             "conversation_id": conversation_id,
             "trace_id": trace_id,
             "safety": input_safety.model_dump(mode="json"),
+            "personal_knowledge_enabled": self.personal_knowledge_service.has_documents(
+                user_id=user_id,
+                tenant_id=self.store.resolve_tenant_id(user_id, tenant_id),
+            ),
         }
         if stream_emit is not None:
             initial_state["stream_emit"] = stream_emit
@@ -581,6 +598,10 @@ class ConversationRuntime:
         for values in source_map.values() if isinstance(source_map, dict) else []:
             if isinstance(values, list):
                 sources.extend(item for item in values if isinstance(item, dict))
+        answer_mode = str(final_state.get("answer_mode", "unknown"))
+        model_info = self._model_info(tenant_settings)
+        if answer_mode == "offline":
+            model_info = {"display_name": "离线规则回答", "source": "offline"}
         response = ConversationResponse(
             answer=answer,
             type=response_type,
@@ -593,9 +614,13 @@ class ConversationRuntime:
             request_id=request_id,
             grill=grill_result,
             grill_progress=self._grill_progress(grill_result, grill_context),
-            model_info=self._model_info(tenant_settings),
+            model_info=model_info,
             safety=safety_summary(final_state.get("safety", input_safety.model_dump(mode="json"))),
             sources=sources,
+            mode=answer_mode,
+            reason=str(final_state.get("answer_reason", "")),
+            confidence=str(final_state.get("answer_confidence", "")),
+            next_step=str(final_state.get("answer_next_step", "")),
         )
 
         message_id = self.store.save_turn(

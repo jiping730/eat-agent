@@ -5,11 +5,12 @@ from langgraph.graph import END, StateGraph
 
 from config import settings
 from core.graph_rag import GraphRAGEngine
-from core.grill_engine import GrillContext, GrillEngine, TaskProfile, field_label, get_profile
+from core.grill_engine import GrillContext, GrillEngine, TaskProfile, get_profile
 from core.intent_router import RequestIntent, classify_request_with_model
 from core.logging_config import configure_logging, log_event
 from core.memory import MemoryManager
 from core.observability import record_fallback, start_span
+from core.offline_answer import OfflineAnswerService
 from core.safety_guard import SafetyDecision, SafetyGuard, safety_summary
 from core.streaming import StreamCancelled
 from core.tool_registry import ToolRegistry, ToolResult, build_default_tool_registry, tool_error_message
@@ -41,6 +42,11 @@ class AgentState(TypedDict):
     trace_id: str
     tool_failures: List[Dict[str, Any]]
     safety: Dict[str, Any]
+    answer_mode: NotRequired[str]
+    answer_reason: NotRequired[str]
+    answer_confidence: NotRequired[str]
+    answer_next_step: NotRequired[str]
+    personal_knowledge_enabled: NotRequired[bool]
     stream_emit: NotRequired[Callable[..., Any]]
     cancel_event: NotRequired[Any]
     regenerate: NotRequired[bool]
@@ -58,6 +64,7 @@ def create_workflow(
     log_event(logger, 20, "workflow_component_initialized", component="memory")
     grill_engine = GrillEngine()
     safety_guard = SafetyGuard()
+    offline_answers = OfflineAnswerService()
     tool_registry = tool_registry or build_default_tool_registry()
 
     # 尝试初始化 GraphRAG，如果失败则禁用
@@ -326,7 +333,7 @@ def create_workflow(
             grill_action = state.get("grill_result", {}).get("action")
 
             if state.get("current_operation") in {"advice", "answer"}:
-                state["plan"] = []
+                state["plan"] = ["retrieval_tool"] if state.get("personal_knowledge_enabled") else []
                 state["followup"] = False
                 return state
 
@@ -696,41 +703,33 @@ def create_workflow(
                     answer = "".join(chunks)
                     if not answer:
                         raise RuntimeError("模型返回为空")
+            state["answer_mode"] = "model"
+            state["answer_reason"] = "model_success"
+            state["answer_confidence"] = "high" if state.get("tool_sources") else "medium"
+            state["answer_next_step"] = ""
         except StreamCancelled:
             raise
         except Exception as exc:
             log_event(logger, 30, "llm_answer_fallback", error_type=type(exc).__name__)
             record_fallback("llm_error")
             grill_fields = state.get("grill_context", {}).get("fields", {})
-            if operation == "advice":
-                if request_intent.get("domain") == "nutrition" and request_intent.get("goal") == "weight_control":
-                    answer = (
-                        "如果目标是减脂，先从可持续的热量控制开始：每餐保证适量蛋白质，增加蔬菜和高纤维主食，"
-                        "减少含糖饮料、油炸和高热量零食；不要极端节食，并结合规律睡眠和适度运动。"
-                        "如果你愿意，我还可以继续为你制定具体餐单。"
-                    )
-                elif request_intent.get("domain") == "nutrition":
-                    answer = "建议先明确你的饮食目标，再从均衡摄入、适量蛋白质、足量蔬菜和控制高糖高油食物开始，逐步调整更容易坚持。"
-                else:
-                    answer = "可以先明确目标和当前情况，再拆成几个可执行的小步骤，设定一个容易坚持的节奏，并根据结果逐步调整。"
-            elif operation == "plan" and state.get("current_goal") != "meal_planner":
-                answer = "可以制定方案。请告诉我你希望达成的目标、当前情况和主要限制条件，我会据此拆解步骤。"
-            elif state.get("current_goal") == "meal_planner":
-                profile = get_profile("meal_planner")
-
-                def display_field(name: str, fallback: str) -> str:
-                    value = grill_fields.get(name, fallback)
-                    field = next((item for item in profile.fields if item.name == name), None) if profile else None
-                    return field_label(field, value) if field else str(value)
-
-                answer = (
-                    f"我按{display_field('meal_type', '当前餐次')}、"
-                    f"{display_field('health_goal', '均衡饮食')}、"
-                    f"{display_field('allergy_info', '未说明忌口')}为你安排。"
-                    "建议选择一份优质蛋白、两份蔬菜和适量主食；如果你愿意，我还可以继续细化菜品和克重。"
-                )
-            else:
-                answer = state.get("tool_outputs", {}).get("calorie_query", "暂时无法获取知识库结果，请稍后重试。")
+            fallback = offline_answers.answer(
+                operation=operation,
+                request_intent=request_intent,
+                current_goal=state.get("current_goal"),
+                fields=grill_fields,
+                tool_outputs=state.get("tool_outputs", {}),
+                error=exc,
+            )
+            state["answer_mode"] = "offline"
+            state["answer_reason"] = fallback.reason
+            state["answer_confidence"] = fallback.confidence
+            state["answer_next_step"] = fallback.next_step
+            state.setdefault("tool_sources", {}).setdefault(
+                "offline_fallback",
+                [{"type": "offline", "source": "offline_rule", "scope": "system"}],
+            )
+            return append_safe_answer(state, fallback.answer)
         return append_safe_answer(state, answer)
 
     def reflect(state: AgentState) -> AgentState:

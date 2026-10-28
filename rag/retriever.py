@@ -305,6 +305,10 @@ def retrieve_with_contract(
             version=metadata.get("version"),
             chunk_id=metadata.get("chunk_id"),
             score=metadata.get("retrieval_score"),
+            metadata={
+                "scope": metadata.get("scope", "tenant"),
+                "index_version": metadata.get("index_version"),
+            },
         )
         sources.append(source)
         retrieved.append(
