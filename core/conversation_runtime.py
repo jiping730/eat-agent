@@ -26,6 +26,7 @@ from core.observability import (
     reset_observation_context,
     start_span,
 )
+from core.profile import ProfileService
 from core.persistence import ConversationStore
 from core.redis_support import RedisCoordinator
 from core.safety_guard import SafetyGuard, safety_summary
@@ -99,6 +100,7 @@ class ConversationRuntime:
         for warning in settings.startup_warnings():
             log_event(self.logger, 30, "configuration_warning", warning=warning)
         self.store = store or ConversationStore()
+        self.profile_service = ProfileService(self.store)
         self.memory_mgr = memory_mgr or MemoryManager(store=self.store)
         if memory_mgr is not None and hasattr(self.memory_mgr, "set_store"):
             self.memory_mgr.set_store(self.store)
@@ -331,6 +333,7 @@ class ConversationRuntime:
         if cancel_event is not None and cancel_event.is_set():
             raise StreamCancelled("stream cancelled by client")
         snapshot = self.store.load(conversation_id, user_id)
+        profile_context = self.profile_service.workflow_context(user_id)
         input_safety = SafetyGuard.inspect_user_input(question)
         # Never put direct identifiers or credentials into the workflow state
         # or durable conversation history.  The original text is not needed
@@ -346,6 +349,7 @@ class ConversationRuntime:
             "messages": [*safe_history, user_message],
             "user_id": user_id,
             "memory_context": [],
+            "user_profile": profile_context,
             "current_goal": snapshot.current_goal or "",
             "current_operation": (snapshot.grill_context or {}).get("operation", "answer"),
             "request_intent": (snapshot.grill_context or {}).get("intent_payload", {}),

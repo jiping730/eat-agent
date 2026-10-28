@@ -467,6 +467,24 @@ body {
     color: #b42318;
 }
 
+.checkbox-label {
+    display: flex !important;
+    flex-direction: row !important;
+    align-items: center;
+    gap: 0.55rem;
+}
+
+.checkbox-label input {
+    width: auto !important;
+}
+
+.profile-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
 .knowledge-table-wrap {
     margin-top: 16px;
     overflow-x: auto;

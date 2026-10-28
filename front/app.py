@@ -35,6 +35,7 @@ from core.observability import (
     reset_observation_context,
     set_app_info,
 )
+from core.profile import ProfileService, UserProfileUpdate
 from core.persistence import ConversationAccessError
 from core.rate_limiter import SlidingWindowRateLimiter
 from front.schemas import (
@@ -54,8 +55,11 @@ from front.schemas import (
     KnowledgeRetrievalTestRequest,
     KnowledgeReviewRequest,
     KnowledgeRollbackRequest,
+    ProfileConsentRequest,
     RefreshRequest,
     TokenResponse,
+    UserProfileResponse,
+    UserProfileUpdateRequest,
     UserResponse,
 )
 
@@ -69,7 +73,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins if isinstance(origins, list) else ["*"],
     allow_credentials=isinstance(origins, list),
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -80,6 +84,7 @@ if startup_errors:
 configure_optional_observability()
 runtime = ConversationRuntime()
 knowledge_service = KnowledgeBaseService(runtime.store)
+profile_service = ProfileService(runtime.store)
 auth_service = AuthService()
 rate_limiter = SlidingWindowRateLimiter(settings.rate_limit_per_minute, redis_url=settings.redis_url)
 set_app_info(settings.app_version, settings.app_env)
@@ -98,6 +103,7 @@ PUBLIC_PATHS = {
     "/redoc",
     "/openapi.json",
     "/admin/knowledge",
+    "/profile",
 }
 
 
@@ -286,6 +292,11 @@ def knowledge_admin_page(request: Request):
     return templates.TemplateResponse(request=request, name="knowledge.html", context={})
 
 
+@app.get("/profile", include_in_schema=False)
+def profile_page(request: Request):
+    return templates.TemplateResponse(request=request, name="profile.html", context={})
+
+
 @app.get("/health/live", include_in_schema=False)
 @app.get("/healthz", include_in_schema=False)
 def health_live():
@@ -417,6 +428,35 @@ def delete_memory(request: Request):
     deleted = runtime.memory_mgr.delete_user_memory(user_id, revoke_consent=True)
     log_event(logger, 20, "memory_deleted", user=fingerprint(user_id), record_count=deleted)
     return {"status": "deleted", "deleted_count": deleted, "consent": False}
+
+
+@app.get("/me/profile", response_model=UserProfileResponse)
+def get_profile(request: Request):
+    return profile_service.get(_platform_user_id(request))
+
+
+@app.put("/me/profile", response_model=UserProfileResponse)
+def update_profile(data: UserProfileUpdateRequest, request: Request):
+    user_id = _platform_user_id(request)
+    payload = UserProfileUpdate.model_validate(data.model_dump(mode="json", exclude_unset=True))
+    return profile_service.update(user_id, payload, actor=user_id)
+
+
+@app.post("/me/profile/consent", response_model=UserProfileResponse)
+def update_profile_consent(data: ProfileConsentRequest, request: Request):
+    user_id = _platform_user_id(request)
+    return profile_service.set_consent(user_id, data.granted, actor=user_id)
+
+
+@app.get("/me/profile/export", response_model=UserProfileResponse)
+def export_profile(request: Request):
+    return profile_service.get(_platform_user_id(request))
+
+
+@app.delete("/me/profile", response_model=UserProfileResponse)
+def delete_profile(request: Request):
+    user_id = _platform_user_id(request)
+    return profile_service.delete(user_id, actor=user_id)
 
 
 @app.get("/admin/knowledge/documents", response_model=KnowledgeDocumentListResponse)

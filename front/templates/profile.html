@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>我的个人档案 · 轻松食</title>
+    <link rel="stylesheet" href="/static/style.css?v=1.0.0">
+</head>
+<body class="knowledge-page">
+    <main class="knowledge-container">
+        <header class="knowledge-header">
+            <div>
+                <p class="eyebrow">PERSONAL PROFILE</p>
+                <h1>我的个人档案</h1>
+                <p>保存后，Agent 会在获得授权的前提下复用这些信息，减少重复追问。</p>
+            </div>
+            <a class="admin-link" href="/">返回聊天</a>
+        </header>
+
+        <section class="knowledge-card">
+            <h2>授权与状态</h2>
+            <p id="profileAuthHint">正在读取登录状态…</p>
+            <label class="checkbox-label">
+                <input id="profileConsent" type="checkbox">
+                我同意 Agent 在后续对话中使用这些个人信息
+            </label>
+        </section>
+
+        <section class="knowledge-card">
+            <h2>基本信息</h2>
+            <div class="form-grid">
+                <label>身高（cm）<input id="heightCm" type="number" min="80" max="250" step="0.1"></label>
+                <label>当前体重（kg）<input id="weightKg" type="number" min="20" max="500" step="0.1"></label>
+                <label>目标体重（kg）<input id="targetWeightKg" type="number" min="20" max="500" step="0.1"></label>
+                <label>年龄<input id="age" type="number" min="13" max="120"></label>
+                <label>性别
+                    <select id="sex">
+                        <option value="">未填写</option>
+                        <option value="female">女性</option>
+                        <option value="male">男性</option>
+                        <option value="other">其他</option>
+                        <option value="prefer_not_to_say">不愿透露</option>
+                    </select>
+                </label>
+                <label>活动量
+                    <select id="activityLevel">
+                        <option value="">未填写</option>
+                        <option value="sedentary">久坐</option>
+                        <option value="light">轻度活动</option>
+                        <option value="moderate">中度活动</option>
+                        <option value="high">高强度活动</option>
+                    </select>
+                </label>
+                <label>健康目标
+                    <select id="healthGoal">
+                        <option value="">未填写</option>
+                        <option value="weight_control">减脂/控制体重</option>
+                        <option value="muscle_gain">增肌</option>
+                        <option value="balanced_diet">均衡饮食</option>
+                        <option value="maintain">维持体重</option>
+                    </select>
+                </label>
+                <label>每日餐数<input id="mealsPerDay" type="number" min="1" max="8"></label>
+                <label>每日预算<input id="dailyBudget" type="number" min="0" max="100000" step="0.01"></label>
+            </div>
+        </section>
+
+        <section class="knowledge-card">
+            <h2>饮食偏好</h2>
+            <p>多个内容用逗号分隔；没有过敏或忌口时可以留空。</p>
+            <div class="form-grid">
+                <label>过敏原<input id="allergies" type="text" placeholder="例如：花生、虾"></label>
+                <label>饮食类型<input id="dietaryPreferences" type="text" placeholder="例如：低糖、高蛋白"></label>
+                <label>不喜欢的食物<input id="dislikedFoods" type="text" placeholder="例如：香菜、芹菜"></label>
+                <label>常用食材<input id="commonIngredients" type="text" placeholder="例如：鸡蛋、鸡胸肉、米饭"></label>
+            </div>
+        </section>
+
+        <section class="knowledge-card profile-actions">
+            <button id="saveProfile" class="primary-action" type="button">保存个人档案</button>
+            <button id="deleteProfile" type="button">清空个人档案</button>
+            <span id="profileStatus" class="knowledge-status"></span>
+        </section>
+    </main>
+    <script src="/static/profile.js?v=1.0.0"></script>
+</body>
+</html>

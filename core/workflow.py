@@ -21,6 +21,7 @@ class AgentState(TypedDict):
     messages: Annotated[List[Dict[str, str]], operator.add]  # 对话历史
     user_id: str  # 用户标识
     memory_context: List[str]  # 记忆检索结果
+    user_profile: Dict[str, Any]  # Explicit, consented personal profile
     current_goal: str  # 当前目标
     current_operation: str  # 当前操作模式
     request_intent: Dict[str, Any]  # 结构化请求意图
@@ -211,6 +212,20 @@ def create_workflow(
                 }
                 state["followup"] = False
                 return state
+
+            profile_context = state.get("user_profile", {}) or {}
+            profile_fields = profile_context.get("fields", {}) if isinstance(profile_context, dict) else {}
+            if isinstance(profile_fields, dict) and profile_fields:
+                persisted_context = dict(persisted_context)
+                fields = dict(persisted_context.get("fields", {}) or {})
+                sources = dict(persisted_context.get("sources", {}) or {})
+                for name, value in profile_fields.items():
+                    if value is not None and name not in fields:
+                        fields[name] = value
+                        sources[name] = "preference"
+                persisted_context["fields"] = fields
+                persisted_context["sources"] = sources
+                state["grill_context"] = persisted_context
 
             profile = get_profile(intent)
             if profile is None:
@@ -621,6 +636,7 @@ def create_workflow(
             ]
             context = {
                 "memory": safe_memory,
+                "user_profile": state.get("user_profile", {}),
                 "tool_outputs": untrusted_outputs,
                 "tool_sources": state.get("tool_sources", {}),
                 "grill_context": state.get("grill_context", {}),

@@ -82,6 +82,40 @@ class MemoryConsentRequest(BaseModel):
     granted: bool
 
 
+class UserProfileUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    height_cm: float | None = Field(default=None, ge=80, le=250)
+    weight_kg: float | None = Field(default=None, ge=20, le=500)
+    target_weight_kg: float | None = Field(default=None, ge=20, le=500)
+    age: int | None = Field(default=None, ge=13, le=120)
+    sex: Literal["female", "male", "other", "prefer_not_to_say"] | None = None
+    activity_level: Literal["sedentary", "light", "moderate", "high"] | None = None
+    health_goal: Literal["weight_control", "muscle_gain", "balanced_diet", "maintain"] | None = None
+    allergies: list[str] = Field(default_factory=list, max_length=20)
+    dietary_preferences: list[str] = Field(default_factory=list, max_length=20)
+    disliked_foods: list[str] = Field(default_factory=list, max_length=50)
+    common_ingredients: list[str] = Field(default_factory=list, max_length=50)
+    meals_per_day: int | None = Field(default=None, ge=1, le=8)
+    daily_budget: float | None = Field(default=None, ge=0, le=100_000)
+    consent_granted: bool | None = None
+
+
+class ProfileConsentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    granted: bool
+
+
+class UserProfileResponse(BaseModel):
+    user_id: str
+    profile: dict[str, Any]
+    consent_granted: bool
+    version: int
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
 class MessageFeedbackRequest(BaseModel):
     rating: Literal["up", "down"]
     comment: str | None = Field(default=None, max_length=2_000)

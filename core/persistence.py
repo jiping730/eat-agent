@@ -177,6 +177,46 @@ class UserMemoryRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
+class UserProfileRecord(Base):
+    """Explicit, user-owned long-term nutrition profile."""
+
+    __tablename__ = "user_profiles"
+
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
+    weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    target_weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
+    age: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sex: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    activity_level: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    health_goal: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    allergies: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    dietary_preferences: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    disliked_foods: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    common_ingredients: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    meals_per_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    daily_budget: Mapped[float | None] = mapped_column(Float, nullable=True)
+    consent_granted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class UserProfileEventRecord(Base):
+    """Content-safe audit trail for explicit profile changes."""
+
+    __tablename__ = "user_profile_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    changed_fields: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
 class KnowledgeDocumentRecord(Base):
     """A managed knowledge document and its current lifecycle state."""
 
@@ -406,6 +446,133 @@ class ConversationStore:
                     record.granted = False
                     record.updated_at = utc_now()
             return int(result.rowcount or 0)
+
+    @staticmethod
+    def _profile_payload(record: UserProfileRecord) -> dict[str, Any]:
+        profile_fields = (
+            "height_cm",
+            "weight_kg",
+            "target_weight_kg",
+            "age",
+            "sex",
+            "activity_level",
+            "health_goal",
+            "allergies",
+            "dietary_preferences",
+            "disliked_foods",
+            "common_ingredients",
+            "meals_per_day",
+            "daily_budget",
+        )
+        list_fields = {"allergies", "dietary_preferences", "disliked_foods", "common_ingredients"}
+        profile = {
+            name: list(getattr(record, name) or []) if name in list_fields else getattr(record, name)
+            for name in profile_fields
+        }
+        return {
+            "user_id": record.user_id,
+            "profile": profile,
+            "consent_granted": bool(record.consent_granted),
+            "version": record.version,
+            "created_at": _as_utc(record.created_at).isoformat(),
+            "updated_at": _as_utc(record.updated_at).isoformat(),
+        }
+
+    def get_user_profile(self, user_id: str) -> dict[str, Any] | None:
+        with self.session_factory() as session:
+            record = session.get(UserProfileRecord, user_id)
+            return self._profile_payload(record) if record is not None else None
+
+    def save_user_profile(
+        self,
+        *,
+        user_id: str,
+        profile: dict[str, Any],
+        consent_granted: bool,
+        actor: str | None = None,
+    ) -> dict[str, Any]:
+        profile_fields = (
+            "height_cm",
+            "weight_kg",
+            "target_weight_kg",
+            "age",
+            "sex",
+            "activity_level",
+            "health_goal",
+            "allergies",
+            "dietary_preferences",
+            "disliked_foods",
+            "common_ingredients",
+            "meals_per_day",
+            "daily_budget",
+        )
+        list_fields = {"allergies", "dietary_preferences", "disliked_foods", "common_ingredients"}
+        with self.session_factory.begin() as session:
+            record = session.get(UserProfileRecord, user_id)
+            is_new = record is None
+            if record is None:
+                record = UserProfileRecord(user_id=user_id, consent_granted=bool(consent_granted))
+                session.add(record)
+                changed_fields = [name for name in profile_fields if profile.get(name) not in (None, [], "")]
+                if consent_granted:
+                    for name in profile_fields:
+                        value = profile.get(name)
+                        setattr(record, name, list(value or []) if name in list_fields else value)
+            else:
+                changed_fields = []
+                for name in profile_fields:
+                    raw_value = profile.get(name)
+                    value = list(raw_value or []) if name in list_fields else raw_value
+                    if getattr(record, name) != value:
+                        changed_fields.append(name)
+                    setattr(record, name, value)
+                if bool(record.consent_granted) != bool(consent_granted):
+                    changed_fields.append("consent_granted")
+                record.consent_granted = bool(consent_granted)
+                record.version += 1 if changed_fields else 0
+                record.updated_at = utc_now()
+            if record is not None and not consent_granted:
+                for name in profile_fields:
+                    setattr(record, name, [] if name in list_fields else None)
+            if changed_fields or is_new:
+                session.add(
+                    UserProfileEventRecord(
+                        user_id=user_id,
+                        action="updated",
+                        changed_fields=sorted(set(changed_fields)),
+                        actor=actor or user_id,
+                    )
+                )
+            session.flush()
+            return self._profile_payload(record)
+
+    def set_user_profile_consent(self, user_id: str, granted: bool, *, actor: str | None = None) -> dict[str, Any]:
+        current = self.get_user_profile(user_id)
+        profile = dict((current or {}).get("profile") or {})
+        if not granted:
+            profile = {}
+        return self.save_user_profile(
+            user_id=user_id,
+            profile=profile,
+            consent_granted=bool(granted),
+            actor=actor,
+        )
+
+    def delete_user_profile(self, user_id: str, *, actor: str | None = None) -> dict[str, Any]:
+        return self.set_user_profile_consent(user_id, False, actor=actor)
+
+    def export_user_profile(self, user_id: str) -> dict[str, Any]:
+        current = self.get_user_profile(user_id)
+        if current is not None:
+            return current
+        return {
+            "user_id": user_id,
+            "profile": {},
+            "consent_granted": False,
+            "version": 0,
+            "created_at": None,
+            "updated_at": None,
+        }
 
     def list_conversations(self, user_id: str) -> list[ConversationRecord]:
         with self.session_factory() as session:
