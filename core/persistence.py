@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import threading
 from typing import Any
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from sqlalchemy import (
     Boolean,
@@ -26,6 +26,7 @@ from sqlalchemy import (
     create_engine,
     delete,
     inspect,
+    or_,
     select,
     text,
 )
@@ -274,6 +275,46 @@ class UserProfileEventRecord(Base):
     changed_fields: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     actor: Mapped[str] = mapped_column(String(128), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
+class ProfileSuggestionRecord(Base):
+    """A user-confirmable profile candidate extracted from an explicit turn."""
+
+    __tablename__ = "profile_suggestions"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    conversation_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
+    source_message_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    field_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    value_json: Mapped[Any] = mapped_column(JSON, nullable=False)
+    label: Mapped[str] = mapped_column(String(256), nullable=False)
+    confidence: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending", index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class UserExperienceSettingsRecord(Base):
+    """Non-sensitive per-user presentation preferences inside one tenant."""
+
+    __tablename__ = "user_experience_settings"
+
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    show_model_info: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    show_sources: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    show_safety_details: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    answer_style: Mapped[str] = mapped_column(String(32), nullable=False, default="standard")
+    pinned_shortcuts: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
 
 
 class KnowledgeDocumentRecord(Base):
@@ -1006,21 +1047,265 @@ class ConversationStore:
             "updated_at": None,
         }
 
-    def list_conversations(self, user_id: str, tenant_id: str | None = None) -> list[ConversationRecord]:
+    @staticmethod
+    def _profile_suggestion_payload(record: ProfileSuggestionRecord) -> dict[str, Any]:
+        return {
+            "id": record.id,
+            "tenant_id": record.tenant_id,
+            "user_id": record.user_id,
+            "conversation_id": record.conversation_id,
+            "source_message_id": record.source_message_id,
+            "field": record.field_name,
+            "value": record.value_json,
+            "label": record.label,
+            "confidence": record.confidence,
+            "status": record.status,
+            "expires_at": _as_utc(record.expires_at).isoformat(),
+            "created_at": _as_utc(record.created_at).isoformat(),
+            "updated_at": _as_utc(record.updated_at).isoformat(),
+            "message": "是否保存到你的个人档案？",
+        }
+
+    def create_profile_suggestion(
+        self,
+        *,
+        user_id: str,
+        field_name: str,
+        value: Any,
+        label: str,
+        confidence: float,
+        conversation_id: str | None = None,
+        source_message_id: int | None = None,
+        tenant_id: str | None = None,
+        expires_days: int = 7,
+    ) -> dict[str, Any]:
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
+        expires_at = utc_now() + timedelta(days=max(1, expires_days))
+        with self.session_factory.begin() as session:
+            existing = session.scalar(
+                select(ProfileSuggestionRecord)
+                .where(
+                    ProfileSuggestionRecord.tenant_id == resolved_tenant_id,
+                    ProfileSuggestionRecord.user_id == user_id,
+                    ProfileSuggestionRecord.field_name == field_name,
+                    ProfileSuggestionRecord.status == "pending",
+                    ProfileSuggestionRecord.expires_at > utc_now(),
+                )
+                .order_by(ProfileSuggestionRecord.created_at.desc())
+            )
+            if existing is not None:
+                return self._profile_suggestion_payload(existing)
+            record = ProfileSuggestionRecord(
+                id=str(uuid4()),
+                tenant_id=resolved_tenant_id,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                source_message_id=source_message_id,
+                field_name=field_name,
+                value_json=value,
+                label=label[:256],
+                confidence=max(0.0, min(1.0, float(confidence))),
+                status="pending",
+                expires_at=expires_at,
+                created_at=utc_now(),
+                updated_at=utc_now(),
+            )
+            session.add(record)
+            session.flush()
+            return self._profile_suggestion_payload(record)
+
+    def list_profile_suggestions(
+        self, user_id: str, *, status: str = "pending", tenant_id: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
+        now = utc_now()
+        with self.session_factory.begin() as session:
+            expired = session.scalars(
+                select(ProfileSuggestionRecord).where(
+                    ProfileSuggestionRecord.tenant_id == resolved_tenant_id,
+                    ProfileSuggestionRecord.user_id == user_id,
+                    ProfileSuggestionRecord.status == "pending",
+                    ProfileSuggestionRecord.expires_at <= now,
+                )
+            ).all()
+            for record in expired:
+                record.status = "expired"
+                record.updated_at = now
+            rows = session.scalars(
+                select(ProfileSuggestionRecord)
+                .where(
+                    ProfileSuggestionRecord.tenant_id == resolved_tenant_id,
+                    ProfileSuggestionRecord.user_id == user_id,
+                    ProfileSuggestionRecord.status == status,
+                )
+                .order_by(ProfileSuggestionRecord.created_at.desc())
+                .limit(max(1, min(limit, 100)))
+            ).all()
+            return [self._profile_suggestion_payload(item) for item in rows]
+
+    def get_profile_suggestion(
+        self, suggestion_id: str, user_id: str, tenant_id: str | None = None
+    ) -> dict[str, Any] | None:
         resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory() as session:
+            record = session.scalar(
+                select(ProfileSuggestionRecord).where(
+                    ProfileSuggestionRecord.id == suggestion_id,
+                    ProfileSuggestionRecord.tenant_id == resolved_tenant_id,
+                    ProfileSuggestionRecord.user_id == user_id,
+                )
+            )
+            if record is None:
+                return None
+            return self._profile_suggestion_payload(record)
+
+    def update_profile_suggestion_status(
+        self, suggestion_id: str, user_id: str, status: str, tenant_id: str | None = None
+    ) -> dict[str, Any]:
+        if status not in {"accepted", "dismissed", "expired"}:
+            raise ValueError("档案建议状态不合法")
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
+        with self.session_factory.begin() as session:
+            record = session.scalar(
+                select(ProfileSuggestionRecord).where(
+                    ProfileSuggestionRecord.id == suggestion_id,
+                    ProfileSuggestionRecord.tenant_id == resolved_tenant_id,
+                    ProfileSuggestionRecord.user_id == user_id,
+                )
+            )
+            if record is None:
+                raise KeyError("档案建议不存在")
+            if record.status != "pending":
+                raise ValueError("档案建议已经处理")
+            if _as_utc(record.expires_at) <= utc_now():
+                record.status = "expired"
+                record.updated_at = utc_now()
+                raise ValueError("档案建议已过期")
+            record.status = status
+            record.updated_at = utc_now()
+            return self._profile_suggestion_payload(record)
+
+    @staticmethod
+    def _experience_settings_payload(record: UserExperienceSettingsRecord) -> dict[str, Any]:
+        return {
+            "tenant_id": record.tenant_id,
+            "user_id": record.user_id,
+            "show_model_info": bool(record.show_model_info),
+            "show_sources": bool(record.show_sources),
+            "show_safety_details": bool(record.show_safety_details),
+            "answer_style": record.answer_style,
+            "pinned_shortcuts": list(record.pinned_shortcuts or []),
+            "updated_at": _as_utc(record.updated_at).isoformat(),
+        }
+
+    def get_experience_settings(self, user_id: str, tenant_id: str | None = None) -> dict[str, Any]:
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
+        with self.session_factory.begin() as session:
+            record = session.get(UserExperienceSettingsRecord, (resolved_tenant_id, user_id))
+            if record is None:
+                record = UserExperienceSettingsRecord(
+                    tenant_id=resolved_tenant_id,
+                    user_id=user_id,
+                    show_model_info=True,
+                    show_sources=True,
+                    show_safety_details=True,
+                    answer_style="standard",
+                    pinned_shortcuts=[],
+                    created_at=utc_now(),
+                    updated_at=utc_now(),
+                )
+                session.add(record)
+                session.flush()
+            return self._experience_settings_payload(record)
+
+    def update_experience_settings(
+        self, user_id: str, values: dict[str, Any], tenant_id: str | None = None
+    ) -> dict[str, Any]:
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
+        allowed = {"show_model_info", "show_sources", "show_safety_details", "answer_style", "pinned_shortcuts"}
+        with self.session_factory.begin() as session:
+            record = session.get(UserExperienceSettingsRecord, (resolved_tenant_id, user_id))
+            if record is None:
+                record = UserExperienceSettingsRecord(
+                    tenant_id=resolved_tenant_id,
+                    user_id=user_id,
+                    show_model_info=True,
+                    show_sources=True,
+                    show_safety_details=True,
+                    answer_style="standard",
+                    pinned_shortcuts=[],
+                    created_at=utc_now(),
+                    updated_at=utc_now(),
+                )
+                session.add(record)
+            for key in allowed:
+                if key not in values or values[key] is None:
+                    continue
+                setattr(record, key, values[key])
+            record.updated_at = utc_now()
+            session.flush()
+            return self._experience_settings_payload(record)
+
+    def list_conversations(
+        self,
+        user_id: str,
+        tenant_id: str | None = None,
+        *,
+        query_text: str | None = None,
+        include_archived: bool = False,
+        limit: int = 50,
+    ) -> list[ConversationRecord]:
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
+        with self.session_factory() as session:
+            filters = [
+                ConversationRecord.tenant_id == resolved_tenant_id,
+                ConversationRecord.user_id == user_id,
+                ConversationRecord.expires_at > utc_now(),
+            ]
+            if not include_archived:
+                filters.append(ConversationRecord.archived_at.is_(None))
+            normalized_query = (query_text or "").strip()
+            if normalized_query:
+                pattern = f"%{normalized_query}%"
+                message_match = select(MessageRecord.conversation_id).where(MessageRecord.content.ilike(pattern))
+                filters.append(
+                    or_(
+                        ConversationRecord.title.ilike(pattern),
+                        ConversationRecord.id.ilike(pattern),
+                        ConversationRecord.id.in_(message_match),
+                    )
+                )
             return list(
                 session.scalars(
                     select(ConversationRecord)
-                    .where(
-                        ConversationRecord.tenant_id == resolved_tenant_id,
-                        ConversationRecord.user_id == user_id,
-                        ConversationRecord.archived_at.is_(None),
-                        ConversationRecord.expires_at > utc_now(),
-                    )
+                    .where(*filters)
                     .order_by(ConversationRecord.updated_at.desc())
+                    .limit(max(1, min(limit, 100)))
                 ).all()
             )
+
+    def rename_conversation(
+        self, conversation_id: str, user_id: str, title: str, tenant_id: str | None = None
+    ) -> ConversationRecord:
+        normalized_title = title.strip()[:200]
+        if not normalized_title:
+            raise ValueError("会话标题不能为空")
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
+        with self.session_factory.begin() as session:
+            conversation = session.scalar(
+                select(ConversationRecord).where(
+                    ConversationRecord.id == conversation_id,
+                    ConversationRecord.tenant_id == resolved_tenant_id,
+                    ConversationRecord.user_id == user_id,
+                )
+            )
+            if conversation is None:
+                if session.get(ConversationRecord, conversation_id) is not None:
+                    raise ConversationAccessError("无权访问该会话")
+                raise KeyError("会话不存在")
+            conversation.title = normalized_title
+            conversation.updated_at = utc_now()
+            return conversation
 
     def create_conversation(
         self, *, conversation_id: str, user_id: str, title: str = "新会话", tenant_id: str | None = None

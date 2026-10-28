@@ -93,6 +93,7 @@ body {
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-wrap: wrap;
     padding: 8px 20px;
     background: #f1fbf3;
     border-bottom: 1px solid #d8eadb;
@@ -108,6 +109,132 @@ body {
     flex: 1;
     min-width: 0;
     background: white;
+}
+
+.conversation-toolbar input[type='search'] {
+    border: 1px solid #8bcf9b;
+    border-radius: 16px;
+    color: #1e7b3a;
+    min-width: 130px;
+    padding: 6px 10px;
+}
+
+.archive-toggle {
+    color: #39754a;
+    font-size: .78rem;
+    white-space: nowrap;
+}
+
+.shortcut-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    padding: 8px 20px 0;
+    background: #f1fbf3;
+}
+
+.shortcut-button {
+    border: 1px solid #b9d5c0;
+    border-radius: 16px;
+    background: #fff;
+    color: #39754a;
+    cursor: pointer;
+    font-size: .78rem;
+    padding: 6px 10px;
+}
+
+.shortcut-button:hover {
+    background: #d4edda;
+}
+
+.experience-settings {
+    background: #f1fbf3;
+    border-bottom: 1px solid #d8eadb;
+    color: #39754a;
+    font-size: .78rem;
+    padding: 5px 20px 8px;
+}
+
+.experience-settings summary {
+    cursor: pointer;
+}
+
+.experience-settings-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+    margin-top: 7px;
+}
+
+.experience-settings-grid label {
+    align-items: center;
+    display: flex;
+    gap: 4px;
+}
+
+.grill-progress,
+.profile-suggestion,
+.response-meta,
+.response-safety {
+    border-radius: 10px;
+    font-size: .78rem;
+    margin-top: 8px;
+    padding: 7px 9px;
+}
+
+.grill-progress {
+    align-items: center;
+    background: #fff7e6;
+    color: #9a6013;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.grill-progress button,
+.profile-suggestion button {
+    border: 1px solid #e3bf76;
+    border-radius: 12px;
+    background: #fff;
+    color: #8b5a16;
+    cursor: pointer;
+    font-size: .72rem;
+    padding: 3px 7px;
+}
+
+.grill-progress button:hover,
+.profile-suggestion button:hover {
+    background: #fff0c7;
+}
+
+.revise-field-button {
+    border-color: #b9d5c0 !important;
+    color: #39754a !important;
+}
+
+.profile-suggestion {
+    align-items: center;
+    background: #eef7ff;
+    color: #285b82;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+}
+
+.response-meta,
+.response-safety {
+    background: #f5f7f6;
+    color: #607067;
+}
+
+.response-safety {
+    background: #fff4e8;
+    color: #935a1a;
+}
+
+.response-meta summary,
+.response-safety summary {
+    cursor: pointer;
 }
 
 .chat-messages {

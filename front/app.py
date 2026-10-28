@@ -37,6 +37,7 @@ from core.observability import (
 )
 from core.profile import ProfileService, UserProfileUpdate
 from core.persistence import ConversationAccessError
+from core.experience import ConversationActionRequest, ExperienceSettings, list_shortcuts
 from core.rate_limiter import SlidingWindowRateLimiter
 from core.tenant import TenantContext, TenantService
 from front.schemas import (
@@ -45,8 +46,11 @@ from front.schemas import (
     ConversationCreateRequest,
     ConversationDetailResponse,
     ConversationListResponse,
+    ConversationUpdateRequest,
     CredentialsRequest,
     ErrorResponse,
+    ExperienceSettingsResponse,
+    ExperienceSettingsUpdateRequest,
     LogoutRequest,
     MemoryConsentRequest,
     MessageFeedbackRequest,
@@ -57,6 +61,7 @@ from front.schemas import (
     KnowledgeReviewRequest,
     KnowledgeRollbackRequest,
     ProfileConsentRequest,
+    ProfileSuggestionListResponse,
     RefreshRequest,
     TokenResponse,
     UserProfileResponse,
@@ -80,7 +85,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins if isinstance(origins, list) else ["*"],
     allow_credentials=isinstance(origins, list),
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
@@ -680,7 +685,7 @@ def knowledge_analytics(request: Request):
 
 
 @app.get("/conversations", response_model=ConversationListResponse)
-def list_conversations(request: Request):
+def list_conversations(request: Request, q: str | None = None, archived: bool = False, limit: int = 50):
     user_id = _platform_user_id(request)
     tenant_id = _tenant_context(request, user_id).tenant_id
     return {
@@ -690,8 +695,15 @@ def list_conversations(request: Request):
                 "title": item.title,
                 "updated_at": item.updated_at.isoformat(),
                 "version": item.version,
+                "archived_at": item.archived_at.isoformat() if item.archived_at else None,
             }
-            for item in runtime.store.list_conversations(user_id, tenant_id)
+            for item in runtime.store.list_conversations(
+                user_id,
+                tenant_id,
+                query_text=q,
+                include_archived=archived,
+                limit=limit,
+            )
         ]
     }
 
@@ -722,6 +734,19 @@ def conversation_detail(conversation_id: str, request: Request):
     }
 
 
+@app.patch("/conversations/{conversation_id}")
+def rename_conversation(conversation_id: str, data: ConversationUpdateRequest, request: Request):
+    user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    conversation = runtime.store.rename_conversation(conversation_id, user_id, data.title, tenant_id)
+    return {
+        "id": conversation.id,
+        "title": conversation.title,
+        "updated_at": conversation.updated_at.isoformat(),
+        "version": conversation.version,
+    }
+
+
 @app.post("/conversations/{conversation_id}/archive")
 def archive_conversation(conversation_id: str, request: Request):
     user_id = _platform_user_id(request)
@@ -734,6 +759,22 @@ def delete_conversation(conversation_id: str, request: Request):
     user_id = _platform_user_id(request)
     runtime.store.delete_conversation(conversation_id, user_id, _tenant_context(request, user_id).tenant_id)
     return {"status": "deleted"}
+
+
+@app.post("/conversations/{conversation_id}/grill/actions", response_model=AskResponse)
+def grill_action(conversation_id: str, data: ConversationActionRequest, request: Request):
+    user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    response = runtime.apply_grill_action(
+        user_id=user_id,
+        conversation_id=conversation_id,
+        action=data.action,
+        field_name=data.field,
+        request_id=_request_id(request),
+        trace_id=_trace_id(request),
+        tenant_id=tenant_id,
+    )
+    return response.to_dict()
 
 
 @app.post("/ask", response_model=AskResponse)
@@ -774,6 +815,56 @@ def ask_stream(data: AskRequest, request: Request):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@app.get("/me/profile/suggestions", response_model=ProfileSuggestionListResponse)
+def list_profile_suggestions(request: Request):
+    user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    return {"items": profile_service.list_suggestions(user_id, tenant_id)}
+
+
+@app.post("/me/profile/suggestions/{suggestion_id}/accept", response_model=UserProfileResponse)
+def accept_profile_suggestion(suggestion_id: str, request: Request):
+    user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    return profile_service.accept_suggestion(suggestion_id, user_id, actor=user_id, tenant_id=tenant_id)
+
+
+@app.post("/me/profile/suggestions/{suggestion_id}/dismiss")
+def dismiss_profile_suggestion(suggestion_id: str, request: Request):
+    user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    return profile_service.dismiss_suggestion(suggestion_id, user_id, tenant_id)
+
+
+@app.get("/me/experience-settings", response_model=ExperienceSettingsResponse)
+def get_experience_settings(request: Request):
+    user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    return runtime.store.get_experience_settings(user_id, tenant_id)
+
+
+@app.put("/me/experience-settings", response_model=ExperienceSettingsResponse)
+def update_experience_settings(data: ExperienceSettingsUpdateRequest, request: Request):
+    user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    settings_payload = data.model_dump(mode="json", exclude_unset=True)
+    current = runtime.store.get_experience_settings(user_id, tenant_id)
+    current_preferences = {
+        key: current[key]
+        for key in ("show_model_info", "show_sources", "show_safety_details", "answer_style", "pinned_shortcuts")
+    }
+    merged = ExperienceSettings.model_validate({**current_preferences, **settings_payload})
+    return runtime.store.update_experience_settings(user_id, merged.model_dump(mode="json"), tenant_id)
+
+
+@app.get("/me/shortcuts")
+def get_shortcuts(request: Request):
+    user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    current = runtime.store.get_experience_settings(user_id, tenant_id)
+    return {"items": list_shortcuts(current.get("pinned_shortcuts", []))}
 
 
 @app.post("/conversations/{conversation_id}/regenerate", response_model=AskResponse)

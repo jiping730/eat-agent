@@ -28,6 +28,7 @@ from core.observability import (
 )
 from core.profile import ProfileService
 from core.persistence import ConversationStore
+from core.grill_engine import GrillContext, GrillEngine, get_profile
 from core.redis_support import RedisCoordinator
 from core.safety_guard import SafetyGuard, safety_summary
 from core.streaming import StreamCancelled, StreamEmitter
@@ -48,6 +49,9 @@ class ConversationResponse:
     request_id: str | None = None
     message_id: int | None = None
     grill: dict[str, Any] = field(default_factory=dict)
+    grill_progress: dict[str, Any] = field(default_factory=dict)
+    profile_suggestions: list[dict[str, Any]] = field(default_factory=list)
+    model_info: dict[str, Any] = field(default_factory=dict)
     safety: dict[str, Any] = field(default_factory=dict)
     sources: list[dict[str, Any]] = field(default_factory=list)
 
@@ -64,6 +68,9 @@ class ConversationResponse:
             "request_id": self.request_id,
             "message_id": self.message_id,
             "grill": self.grill,
+            "grill_progress": self.grill_progress,
+            "profile_suggestions": self.profile_suggestions,
+            "model_info": self.model_info,
             "safety": self.safety,
             "sources": self.sources,
         }
@@ -82,6 +89,9 @@ class ConversationResponse:
             request_id=payload.get("request_id"),
             message_id=payload.get("message_id"),
             grill=dict(payload.get("grill", {})),
+            grill_progress=dict(payload.get("grill_progress", {})),
+            profile_suggestions=list(payload.get("profile_suggestions", [])),
+            model_info=dict(payload.get("model_info", {})),
             safety=dict(payload.get("safety", {})),
             sources=list(payload.get("sources", [])),
         )
@@ -130,6 +140,24 @@ class ConversationRuntime:
         )
         self._locks: defaultdict[str, threading.RLock] = defaultdict(threading.RLock)
         self.coordinator = RedisCoordinator()
+        self.grill_engine = GrillEngine()
+
+    @staticmethod
+    def _model_info(tenant_settings: dict[str, Any] | None = None) -> dict[str, Any]:
+        settings_payload = tenant_settings or {}
+        tenant_alias = settings_payload.get("model_alias") if isinstance(settings_payload, dict) else None
+        effective_model = tenant_alias or settings.llm_answer_model or settings.llm_model
+        return {
+            "display_name": str(effective_model or "默认模型"),
+            "source": "tenant" if tenant_alias else "default",
+        }
+
+    def _grill_progress(self, grill_result: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        task = grill_result.get("task") or context.get("intent") or context.get("active_task")
+        profile = get_profile(task)
+        if profile is None:
+            return {}
+        return GrillEngine.progress(profile, context)
 
     def ask(
         self,
@@ -328,6 +356,105 @@ class ConversationRuntime:
         finally:
             reset_observation_context(context_token)
 
+    def apply_grill_action(
+        self,
+        *,
+        user_id: str,
+        conversation_id: str,
+        action: str,
+        field_name: str | None = None,
+        request_id: str | None = None,
+        trace_id: str | None = None,
+        tenant_id: str | None = None,
+    ) -> ConversationResponse:
+        """Apply a user-visible skip/revise/restart action to Grill state."""
+
+        if action not in {"skip", "revise", "restart"}:
+            raise ValueError("不支持的 Grill 操作")
+        resolved_request_id = request_id or str(uuid.uuid4())
+        resolved_trace_id = trace_id or new_trace_id()
+        resolved_tenant_id = self.store.resolve_tenant_id(user_id, tenant_id)
+        with self._locks[conversation_id]:
+            with self.coordinator.conversation_lock(conversation_id):
+                existing_response = self.store.get_idempotent_response(
+                    conversation_id, user_id, resolved_request_id, resolved_tenant_id
+                )
+                if existing_response is not None:
+                    return ConversationResponse.from_dict(existing_response)
+                snapshot = self.store.load(
+                    conversation_id, user_id, include_metadata=True, tenant_id=resolved_tenant_id
+                )
+                context = dict(snapshot.grill_context or {})
+                task = context.get("intent") or snapshot.current_goal
+                profile = get_profile(task)
+                if profile is None:
+                    raise ValueError("当前会话没有可操作的追问任务")
+                if action == "skip":
+                    result = self.grill_engine.skip(
+                        profile,
+                        context,
+                        field_name=field_name,
+                        current_intent=task,
+                        operation=context.get("operation"),
+                    )
+                elif action == "revise":
+                    result = self.grill_engine.revise(
+                        profile,
+                        context,
+                        field_name=field_name,
+                        current_intent=task,
+                        operation=context.get("operation"),
+                    )
+                else:
+                    restart_context = GrillContext(
+                        intent=profile.task_type,
+                        operation=context.get("operation"),
+                        domain=context.get("domain"),
+                        intent_payload=context.get("intent_payload", {}),
+                    )
+                    result = self.grill_engine.process(
+                        profile,
+                        "",
+                        restart_context,
+                        current_intent=task,
+                        operation=context.get("operation"),
+                    )
+                grill_context = result.context.model_dump(mode="json")
+                response = ConversationResponse(
+                    answer=result.message or result.question or "请继续补充信息。",
+                    type="clarification" if result.action in {"clarify", "fallback"} else "answer",
+                    target_field=result.target_field,
+                    options=[item.model_dump(mode="json") for item in result.candidates],
+                    assumptions=result.assumptions,
+                    conversation_id=conversation_id,
+                    request_id=resolved_request_id,
+                    grill=result.to_dict(),
+                    grill_progress=self._grill_progress(result.to_dict(), grill_context),
+                    model_info=self._model_info(self.store.get_tenant_settings(resolved_tenant_id)),
+                )
+                message_id = self.store.save_turn(
+                    conversation_id=conversation_id,
+                    user_id=user_id,
+                    request_id=resolved_request_id,
+                    user_message="",
+                    assistant_message=response.answer,
+                    grill_context=grill_context,
+                    current_goal=task,
+                    response_type=response.type,
+                    target_field=response.target_field,
+                    response_payload=response.to_dict(),
+                    persist_user_message=False,
+                    tenant_id=resolved_tenant_id,
+                )
+                response = replace(response, message_id=message_id)
+                self.store.update_idempotent_response(
+                    conversation_id=conversation_id,
+                    request_id=resolved_request_id,
+                    response_payload=response.to_dict(),
+                    tenant_id=resolved_tenant_id,
+                )
+                return response
+
     def _ask_locked(
         self,
         question: str,
@@ -465,6 +592,8 @@ class ConversationRuntime:
             conversation_id=conversation_id,
             request_id=request_id,
             grill=grill_result,
+            grill_progress=self._grill_progress(grill_result, grill_context),
+            model_info=self._model_info(tenant_settings),
             safety=safety_summary(final_state.get("safety", input_safety.model_dump(mode="json"))),
             sources=sources,
         )
@@ -484,6 +613,16 @@ class ConversationRuntime:
             tenant_id=tenant_id,
         )
         response = replace(response, message_id=message_id)
+        response = replace(
+            response,
+            profile_suggestions=self.profile_service.create_suggestions(
+                question,
+                user_id=user_id,
+                conversation_id=conversation_id,
+                source_message_id=message_id,
+                tenant_id=tenant_id,
+            ),
+        )
         self.store.update_idempotent_response(
             conversation_id=conversation_id,
             request_id=request_id,

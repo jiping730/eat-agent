@@ -74,11 +74,18 @@ class ConversationCreateRequest(BaseModel):
     title: str = Field(default="新会话", max_length=200)
 
 
+class ConversationUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=200)
+
+
 class ConversationSummary(BaseModel):
     id: str
     title: str
     updated_at: str
     version: int
+    archived_at: str | None = None
 
 
 class ConversationListResponse(BaseModel):
@@ -165,8 +172,36 @@ class AskResponse(BaseModel):
     conversation_id: str | None = None
     request_id: str | None = None
     grill: dict[str, Any] = Field(default_factory=dict)
+    grill_progress: dict[str, Any] = Field(default_factory=dict)
+    profile_suggestions: list[dict[str, Any]] = Field(default_factory=list)
+    model_info: dict[str, Any] = Field(default_factory=dict)
     safety: dict[str, Any] = Field(default_factory=dict)
     sources: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ProfileSuggestionListResponse(BaseModel):
+    items: list[dict[str, Any]]
+
+
+class ExperienceSettingsResponse(BaseModel):
+    tenant_id: str
+    user_id: str
+    show_model_info: bool
+    show_sources: bool
+    show_safety_details: bool
+    answer_style: Literal["concise", "standard", "detailed"]
+    pinned_shortcuts: list[str] = Field(default_factory=list)
+    updated_at: str
+
+
+class ExperienceSettingsUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    show_model_info: bool | None = None
+    show_sources: bool | None = None
+    show_safety_details: bool | None = None
+    answer_style: Literal["concise", "standard", "detailed"] | None = None
+    pinned_shortcuts: list[str] | None = Field(default=None, max_length=12)
 
 
 class KnowledgeDocumentUploadRequest(BaseModel):

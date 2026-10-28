@@ -136,6 +136,7 @@ class GrillContext(BaseModel):
     clarification_count: int = 0
     total_rounds: int = 0
     asked_fields: list[str] = Field(default_factory=list)
+    skipped_fields: list[str] = Field(default_factory=list)
     last_question: str | None = None
     validation_errors: list[ValidationIssue] = Field(default_factory=list)
     conflict_fields: list[str] = Field(default_factory=list)
@@ -225,6 +226,21 @@ _UNKNOWN_WORDS = {"不知道", "不清楚", "不确定", "没想好", "还不知
 _REFUSAL_WORDS = ("不想回答", "不方便回答", "拒绝回答", "不回答", "跳过这个", "不愿意说")
 _CONFIRM_WORDS = ("确认", "确定", "可以", "好的", "好", "继续", "没问题")
 _CANCEL_WORDS = ("取消", "不要", "算了", "不需要")
+_FREE_TEXT_REQUEST_MARKERS = (
+    "我想",
+    "想要",
+    "帮我",
+    "安排",
+    "规划",
+    "查询",
+    "查一下",
+    "多少",
+    "热量",
+    "卡路里",
+    "请问",
+    "告诉我",
+    "有没有",
+)
 
 
 def _clean(value: str) -> str:
@@ -250,6 +266,24 @@ def _is_confirmation(text: str) -> bool:
 def _is_cancellation(text: str) -> bool:
     normalized = text.strip().strip("，。！？? ")
     return normalized in _CANCEL_WORDS
+
+
+def _allow_initial_free_text(field: FieldSpec, text: str) -> bool:
+    """Accept an explicit free-text answer without treating a request as one.
+
+    Free text is normally collected after Grill asks a targeted question.  On
+    the first turn it is also useful for profiles with an explicit, ordinary
+    text value (for example a custom ``goal`` field), but broad request text
+    such as "我想吃点东西" must not be written into a field.  Safety-critical
+    fields remain gated behind their targeted question regardless of content.
+    """
+
+    if not field.allow_free_text or field.safety_critical or field.field_type != "text":
+        return False
+    normalized = text.strip().strip("，。！？? ")
+    if not normalized or _is_unknown_answer(normalized) or _is_refusal(normalized):
+        return False
+    return not any(marker in normalized for marker in _FREE_TEXT_REQUEST_MARKERS)
 
 
 def _known_value(field: FieldSpec, text: str) -> Any | None:
@@ -539,7 +573,12 @@ class GrillEngine:
         for field in profile.fields:
             if field.name == pending_field:
                 continue
-            extraction = _extract_for_profile(profile, field, user_input)
+            extraction = _extract_for_profile(
+                profile,
+                field,
+                user_input,
+                allow_free_text_fallback=_allow_initial_free_text(field, user_input),
+            )
             if extraction.issue:
                 if extraction.issue.code in {"invalid_value", "conflict"}:
                     ctx.validation_errors.append(extraction.issue)
@@ -591,6 +630,106 @@ class GrillEngine:
             ctx.status = "awaiting_confirmation"
             return self._confirmation_result(profile, ctx, assumptions=assumptions, reason="ready_for_confirmation")
         return self._execute_result(profile, ctx, assumptions=assumptions, reason="intent_switched" if switched_from else "ready")
+
+    @classmethod
+    def progress(cls, profile: TaskProfile, context: dict[str, Any] | GrillContext | None) -> dict[str, Any]:
+        """Return a user-facing progress view without exposing internal state."""
+
+        ctx = GrillContext.from_value(context)
+        required = cls._required_fields(profile, ctx, operation=ctx.operation)
+        required_names = {field.name for field in required}
+        completed_fields = []
+        for field in profile.fields:
+            if field.name not in ctx.fields or not cls._exists(ctx.fields.get(field.name)):
+                continue
+            completed_fields.append(
+                {
+                    "name": field.name,
+                    "label": field.description,
+                    "value": ctx.fields[field.name],
+                    "source": ctx.sources.get(field.name),
+                }
+            )
+        current = profile.field(ctx.pending_field)
+        return {
+            "task": profile.task_type,
+            "status": ctx.status,
+            "completed_fields": completed_fields,
+            "current_field": (
+                {"name": current.name, "label": current.description} if current is not None else None
+            ),
+            "missing_fields": [
+                field.name
+                for field in required
+                if field.name not in ctx.fields or not cls._exists(ctx.fields.get(field.name))
+            ],
+            "completed_count": sum(1 for item in completed_fields if item["name"] in required_names),
+            "required_count": len(required),
+            "current_round": ctx.total_rounds,
+            "max_rounds": profile.max_total_rounds,
+            "clarification_count": ctx.clarification_count,
+            "can_skip": bool(current is not None and current.name not in required_names and not current.safety_critical),
+            "skipped_fields": list(ctx.skipped_fields),
+        }
+
+    def skip(
+        self,
+        profile: TaskProfile,
+        context: dict[str, Any] | GrillContext | None,
+        *,
+        field_name: str | None = None,
+        current_intent: str | None = None,
+        operation: str | None = None,
+    ) -> GrillResult:
+        ctx = GrillContext.from_value(context)
+        target_name = field_name or ctx.pending_field
+        field = profile.field(target_name)
+        if field is None:
+            raise ValueError("没有可跳过的追问字段")
+        required_names = {item.name for item in self._required_fields(profile, ctx, operation=operation or ctx.operation)}
+        if field.name in required_names or field.safety_critical:
+            raise ValueError(f"{field.description}是必需信息，不能跳过")
+        ctx.fields.pop(field.name, None)
+        ctx.sources.pop(field.name, None)
+        ctx.field_states.pop(field.name, None)
+        ctx.skipped_fields = list(dict.fromkeys([*ctx.skipped_fields, field.name]))
+        ctx.pending_field = None
+        ctx.status = "collecting"
+        return self.process(profile, "", ctx, current_intent=current_intent or profile.task_type, operation=operation)
+
+    def revise(
+        self,
+        profile: TaskProfile,
+        context: dict[str, Any] | GrillContext | None,
+        *,
+        field_name: str | None = None,
+        current_intent: str | None = None,
+        operation: str | None = None,
+    ) -> GrillResult:
+        ctx = GrillContext.from_value(context)
+        target_name = field_name or ctx.pending_field
+        field = profile.field(target_name)
+        if field is None:
+            raise ValueError("没有可修改的追问字段")
+        affected = {field.name}
+        for rule in profile.dependencies:
+            if field.name in rule.when or field.name in rule.require:
+                affected.update(rule.require)
+        for name in affected:
+            ctx.fields.pop(name, None)
+            ctx.sources.pop(name, None)
+            ctx.field_states.pop(name, None)
+            if name in ctx.skipped_fields:
+                ctx.skipped_fields.remove(name)
+        ctx.pending_field = field.name
+        ctx.status = "collecting"
+        ctx.last_question = field.question or f"请重新补充你的{field.description}。"
+        return self._clarify(
+            profile,
+            ctx,
+            field,
+            reason="revision",
+        )
 
     def _apply_extraction(self, ctx: GrillContext, field: FieldSpec, extraction: _Extraction, evidence: str) -> str:
         if extraction.refused:

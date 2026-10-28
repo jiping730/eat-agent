@@ -24,10 +24,29 @@
         </header>
         <div class="conversation-toolbar">
             <button type="button" id="newConversationBtn">新建会话</button>
+            <input type="search" id="conversationSearch" placeholder="搜索会话…" aria-label="搜索会话">
             <select id="conversationSelect" aria-label="历史会话">
                 <option value="">当前会话</option>
             </select>
+            <button type="button" id="renameConversationBtn">重命名</button>
+            <label class="archive-toggle"><input type="checkbox" id="showArchivedInput"> 已归档</label>
         </div>
+        <div class="shortcut-bar" id="shortcutBar" aria-label="常用目标"></div>
+        <details class="experience-settings" id="experienceSettings">
+            <summary>回答显示设置</summary>
+            <div class="experience-settings-grid">
+                <label><input type="checkbox" id="showModelInfoInput" checked> 显示模型信息</label>
+                <label><input type="checkbox" id="showSourcesInput" checked> 显示来源</label>
+                <label><input type="checkbox" id="showSafetyInput" checked> 显示安全提示</label>
+                <label>回答风格
+                    <select id="answerStyleInput">
+                        <option value="concise">简洁</option>
+                        <option value="standard" selected>标准</option>
+                        <option value="detailed">详细</option>
+                    </select>
+                </label>
+            </div>
+        </details>
         <div class="chat-messages" id="chatMessages">
             <div class="message bot-message">
                 <div class="avatar">🤖</div>
@@ -39,6 +58,6 @@
             <button id="sendBtn">发送</button>
         </div>
     </div>
-    <script src="/static/script.js?v=0.8.0-streaming"></script>
+    <script src="/static/script.js?v=0.9.0-p2-2"></script>
 </body>
 </html>

@@ -9,12 +9,21 @@ const logoutBtn = document.getElementById('logoutBtn');
 const authStatus = document.getElementById('authStatus');
 const newConversationBtn = document.getElementById('newConversationBtn');
 const conversationSelect = document.getElementById('conversationSelect');
+const renameConversationBtn = document.getElementById('renameConversationBtn');
+const conversationSearch = document.getElementById('conversationSearch');
+const showArchivedInput = document.getElementById('showArchivedInput');
+const shortcutBar = document.getElementById('shortcutBar');
+const showModelInfoInput = document.getElementById('showModelInfoInput');
+const showSourcesInput = document.getElementById('showSourcesInput');
+const showSafetyInput = document.getElementById('showSafetyInput');
+const answerStyleInput = document.getElementById('answerStyleInput');
 
 let accessToken = localStorage.getItem('accessToken');
 let refreshToken = localStorage.getItem('refreshToken');
 let userId = localStorage.getItem('userId');
 let conversationId = localStorage.getItem('conversationId');
 let activeStreamController = null;
+let currentConversationRendered = false;
 
 function addMessage(text, isUser, stats = null, options = [], metadata = {}) {
     const messageDiv = document.createElement('div');
@@ -139,6 +148,123 @@ function updateAuthUi(user = null) {
     authStatus.textContent = user ? `已登录：${user.username}` : (loggedIn ? '已登录' : '开发模式');
 }
 
+function appendTextBlock(wrapper, className, title, text) {
+    if (!text) return;
+    const block = document.createElement('details');
+    block.className = className;
+    const summary = document.createElement('summary');
+    summary.textContent = title;
+    const body = document.createElement('div');
+    body.textContent = text;
+    block.appendChild(summary);
+    block.appendChild(body);
+    wrapper.appendChild(block);
+}
+
+function renderResponseMetadata(wrapper, response) {
+    const settings = {
+        model: showModelInfoInput?.checked !== false,
+        sources: showSourcesInput?.checked !== false,
+        safety: showSafetyInput?.checked !== false,
+    };
+    if (settings.model && response.model_info?.display_name) {
+        appendTextBlock(wrapper, 'response-meta', '模型信息', response.model_info.display_name);
+    }
+    if (settings.sources && (response.sources || []).length) {
+        const sourceText = response.sources.slice(0, 5).map((source) => {
+            const title = source.title || source.source_name || source.document_id || '知识库来源';
+            const evidence = source.evidence ? `：${source.evidence}` : '';
+            return `${title}${evidence}`;
+        }).join('\n');
+        appendTextBlock(wrapper, 'response-meta', '参考来源', sourceText);
+    }
+    if (settings.safety && response.safety?.message) {
+        appendTextBlock(wrapper, 'response-safety', '安全提示', response.safety.message);
+    }
+}
+
+function renderGrillProgress(wrapper, progress) {
+    if (!progress || !progress.required_count) return;
+    const progressDiv = document.createElement('div');
+    progressDiv.className = 'grill-progress';
+    const current = progress.current_field?.label || '信息收集完成';
+    const text = document.createElement('span');
+    text.textContent = `追问进度：${progress.completed_count}/${progress.required_count} · 当前：${current}`;
+    progressDiv.appendChild(text);
+    if (progress.can_skip && progress.current_field?.name) {
+        const skip = document.createElement('button');
+        skip.type = 'button';
+        skip.textContent = '跳过本项';
+        skip.addEventListener('click', () => applyGrillAction('skip', progress.current_field.name));
+        progressDiv.appendChild(skip);
+    }
+    (progress.completed_fields || []).forEach((field) => {
+        const revise = document.createElement('button');
+        revise.type = 'button';
+        revise.className = 'revise-field-button';
+        revise.textContent = `修改${field.label}`;
+        revise.addEventListener('click', () => applyGrillAction('revise', field.name));
+        progressDiv.appendChild(revise);
+    });
+    wrapper.appendChild(progressDiv);
+}
+
+async function applyGrillAction(action, field) {
+    if (!conversationId || activeStreamController) return;
+    const response = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}/grill/actions`, {
+        method: 'POST',
+        body: JSON.stringify({ action, field }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+        addMessage(data.error || '当前追问操作无法执行', false);
+        return;
+    }
+    const result = addMessage(data.answer || '请继续补充信息。', false, {
+        time: data.response_time,
+        retrieval: data.retrieval_count,
+        type: data.type,
+    }, data.type === 'clarification' ? (data.options || []) : [], { id: data.message_id, allowActions: true });
+    renderGrillProgress(result.contentWrapper, data.grill_progress);
+    renderResponseMetadata(result.contentWrapper, data);
+    renderProfileSuggestions(result.contentWrapper, data.profile_suggestions || []);
+    await loadConversations(false);
+}
+
+function renderProfileSuggestions(wrapper, suggestions = []) {
+    suggestions.forEach((suggestion) => {
+        const card = document.createElement('div');
+        card.className = 'profile-suggestion';
+        const text = document.createElement('span');
+        text.textContent = `建议保存“${suggestion.label}”到个人档案`;
+        const accept = document.createElement('button');
+        accept.type = 'button';
+        accept.textContent = '保存';
+        const dismiss = document.createElement('button');
+        dismiss.type = 'button';
+        dismiss.textContent = '暂不保存';
+        accept.addEventListener('click', async () => {
+            const response = await apiFetch(`/me/profile/suggestions/${encodeURIComponent(suggestion.id)}/accept`, { method: 'POST' });
+            if (response.ok) {
+                text.textContent = '已保存到个人档案';
+                accept.remove();
+                dismiss.remove();
+            } else {
+                const data = await response.json();
+                text.textContent = data.error || '保存失败，请先开启档案授权';
+            }
+        });
+        dismiss.addEventListener('click', async () => {
+            await apiFetch(`/me/profile/suggestions/${encodeURIComponent(suggestion.id)}/dismiss`, { method: 'POST' });
+            card.remove();
+        });
+        card.appendChild(text);
+        card.appendChild(accept);
+        card.appendChild(dismiss);
+        wrapper.appendChild(card);
+    });
+}
+
 async function apiFetch(url, options = {}, retry = true) {
     const headers = new Headers(options.headers || {});
     if (!headers.has('Content-Type') && options.body) headers.set('Content-Type', 'application/json');
@@ -181,11 +307,16 @@ async function authenticate(path) {
     persistTokens(data);
     passwordInput.value = '';
     await loadConversations();
+    await loadShortcuts();
+    await loadExperienceSettings();
 }
 
-async function loadConversations() {
+async function loadConversations(openCurrent = true) {
     if (!accessToken && !userId) return;
-    const response = await apiFetch('/conversations');
+    const params = new URLSearchParams();
+    if (conversationSearch?.value.trim()) params.set('q', conversationSearch.value.trim());
+    if (showArchivedInput?.checked) params.set('archived', 'true');
+    const response = await apiFetch(`/conversations?${params.toString()}`);
     if (!response.ok) return;
     const data = await response.json();
     conversationSelect.innerHTML = '<option value="">当前会话</option>';
@@ -195,15 +326,56 @@ async function loadConversations() {
         option.textContent = item.title || item.id.slice(0, 8);
         conversationSelect.appendChild(option);
     });
-    if (conversationId) {
+    if (openCurrent && conversationId && !currentConversationRendered) {
         conversationSelect.value = conversationId;
         if (conversationSelect.value === conversationId) await openConversation(conversationId);
     }
 }
 
+async function loadShortcuts() {
+    if (!shortcutBar || (!accessToken && !userId)) return;
+    const response = await apiFetch('/me/shortcuts');
+    if (!response.ok) return;
+    shortcutBar.innerHTML = '';
+    (await response.json()).items?.forEach((item) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'shortcut-button';
+        button.textContent = item.label;
+        button.addEventListener('click', () => sendQuestion(item.prompt));
+        shortcutBar.appendChild(button);
+    });
+}
+
+async function loadExperienceSettings() {
+    if (!accessToken && !userId) return;
+    const response = await apiFetch('/me/experience-settings');
+    if (!response.ok) return;
+    const data = await response.json();
+    if (showModelInfoInput) showModelInfoInput.checked = data.show_model_info !== false;
+    if (showSourcesInput) showSourcesInput.checked = data.show_sources !== false;
+    if (showSafetyInput) showSafetyInput.checked = data.show_safety_details !== false;
+    if (answerStyleInput) answerStyleInput.value = data.answer_style || 'standard';
+    await loadShortcuts();
+}
+
+async function saveExperienceSettings() {
+    if (!accessToken && !userId) return;
+    await apiFetch('/me/experience-settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+            show_model_info: showModelInfoInput?.checked !== false,
+            show_sources: showSourcesInput?.checked !== false,
+            show_safety_details: showSafetyInput?.checked !== false,
+            answer_style: answerStyleInput?.value || 'standard',
+        }),
+    });
+}
+
 async function openConversation(id) {
     conversationId = id;
     localStorage.setItem('conversationId', conversationId);
+    currentConversationRendered = false;
     const response = await apiFetch(`/conversations/${encodeURIComponent(id)}`);
     if (!response.ok) return;
     const data = await response.json();
@@ -219,6 +391,7 @@ async function openConversation(id) {
         [],
         { id: message.id, allowActions: message.role === 'assistant' },
     ));
+    currentConversationRendered = true;
 }
 
 async function createConversation() {
@@ -234,7 +407,24 @@ async function createConversation() {
     }
     localStorage.setItem('conversationId', conversationId);
     resetChat();
-    await loadConversations();
+    await loadConversations(false);
+}
+
+async function renameConversation() {
+    if (!conversationId) return;
+    const current = conversationSelect.options[conversationSelect.selectedIndex]?.textContent || '';
+    const title = window.prompt('请输入新的会话名称', current);
+    if (!title || !title.trim()) return;
+    const response = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title: title.trim() }),
+    });
+    if (!response.ok) {
+        const data = await response.json();
+        addMessage(`重命名失败：${data.error || '请求失败'}`, false);
+        return;
+    }
+    await loadConversations(false);
 }
 
 function stageLabel(stage) {
@@ -271,6 +461,9 @@ function finalizeStreamingMessage(result, response) {
     stats.className = 'stats';
     stats.textContent = `响应时间: ${response.response_time ?? '-'}s  检索次数: ${response.retrieval_count ?? '-'}`;
     result.contentWrapper.appendChild(stats);
+    renderGrillProgress(result.contentWrapper, response.grill_progress);
+    renderResponseMetadata(result.contentWrapper, response);
+    renderProfileSuggestions(result.contentWrapper, response.profile_suggestions || []);
     if (response.type === 'clarification' && (response.options || []).length) {
         const optionsDiv = document.createElement('div');
         optionsDiv.className = 'clarification-options';
@@ -368,7 +561,7 @@ async function sendQuestion(questionOverride = null) {
         });
         if (finalResponse) finalizeStreamingMessage(result, finalResponse);
         else if (!result.content.textContent) updateStreamStatus(result, '回答未完成，请重试');
-        await loadConversations();
+        await loadConversations(false);
     } catch (error) {
         if (error.name === 'AbortError') {
             updateStreamStatus(result, '已停止生成');
@@ -398,7 +591,7 @@ async function regenerateAnswer() {
         retrieval: data.retrieval_count,
         type: data.type,
     }, data.type === 'clarification' ? (data.options || []) : [], { id: data.message_id, allowActions: true });
-    await loadConversations();
+    await loadConversations(false);
 }
 
 async function submitFeedback(messageId, rating, actions) {
@@ -428,9 +621,21 @@ logoutBtn.addEventListener('click', async () => {
     clearTokens();
 });
 newConversationBtn.addEventListener('click', createConversation);
+renameConversationBtn?.addEventListener('click', renameConversation);
 conversationSelect.addEventListener('change', () => {
     if (conversationSelect.value) openConversation(conversationSelect.value);
 });
+showArchivedInput?.addEventListener('change', () => loadConversations());
+conversationSearch?.addEventListener('input', () => {
+    window.clearTimeout(window.conversationSearchTimer);
+    window.conversationSearchTimer = window.setTimeout(() => loadConversations(), 250);
+});
+[
+    showModelInfoInput,
+    showSourcesInput,
+    showSafetyInput,
+    answerStyleInput,
+].forEach((input) => input?.addEventListener('change', saveExperienceSettings));
 sendBtn.addEventListener('click', () => sendQuestion());
 questionInput.addEventListener('keypress', (event) => {
     if (event.key === 'Enter') sendQuestion();
@@ -438,3 +643,5 @@ questionInput.addEventListener('keypress', (event) => {
 
 updateAuthUi();
 loadConversations();
+loadShortcuts();
+loadExperienceSettings();
