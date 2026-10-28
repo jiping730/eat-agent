@@ -64,21 +64,25 @@ class MemoryManager:
         with open(self.governance_file, "w", encoding="utf-8") as file:
             json.dump(payload, file, indent=2, ensure_ascii=False)
 
-    def has_consent(self, user_id: str | None) -> bool:
+    def has_consent(self, user_id: str | None, tenant_id: str | None = None) -> bool:
         if not user_id:
             return False
         if self.store is not None and hasattr(self.store, "get_memory_consent"):
-            return bool(self.store.get_memory_consent(user_id))
+            return bool(self.store.get_memory_consent(user_id, tenant_id))
         with self._lock:
             return bool(self._load_governance().get("consents", {}).get(user_id, False))
 
-    def set_consent(self, user_id: str, granted: bool) -> bool:
+    def set_consent(self, user_id: str, granted: bool, tenant_id: str | None = None) -> bool:
         if not user_id or not user_id.strip():
             raise ValueError("user_id 不能为空")
         if self.store is not None and hasattr(self.store, "set_memory_consent"):
-            result = bool(self.store.set_memory_consent(user_id, bool(granted)))
+            result = bool(self.store.set_memory_consent(user_id, bool(granted), tenant_id))
             if not granted:
-                self.short_term = [item for item in self.short_term if item.get("user_id") != user_id]
+                self.short_term = [
+                    item
+                    for item in self.short_term
+                    if not (item.get("user_id") == user_id and item.get("tenant_id") == tenant_id)
+                ]
             return result
         with self._lock:
             payload = self._load_governance()
@@ -89,9 +93,9 @@ class MemoryManager:
             self._save_governance(payload)
         return bool(granted)
 
-    def export_user_memory(self, user_id: str) -> dict[str, Any]:
+    def export_user_memory(self, user_id: str, tenant_id: str | None = None) -> dict[str, Any]:
         if self.store is not None and hasattr(self.store, "export_memory"):
-            return self.store.export_memory(user_id)
+            return self.store.export_memory(user_id, tenant_id)
         with self._lock:
             payload = self._load_governance()
             return {
@@ -100,10 +104,18 @@ class MemoryManager:
                 "items": list(payload["items"].get(user_id, [])),
             }
 
-    def delete_user_memory(self, user_id: str, *, revoke_consent: bool = True) -> int:
+    def delete_user_memory(
+        self, user_id: str, *, revoke_consent: bool = True, tenant_id: str | None = None
+    ) -> int:
         if self.store is not None and hasattr(self.store, "delete_memory"):
-            deleted = int(self.store.delete_memory(user_id, revoke_consent=revoke_consent))
-            self.short_term = [item for item in self.short_term if item.get("user_id") != user_id]
+            deleted = int(
+                self.store.delete_memory(user_id, revoke_consent=revoke_consent, tenant_id=tenant_id)
+            )
+            self.short_term = [
+                item
+                for item in self.short_term
+                if not (item.get("user_id") == user_id and item.get("tenant_id") == tenant_id)
+            ]
             return deleted
         with self._lock:
             payload = self._load_governance()
@@ -128,7 +140,13 @@ class MemoryManager:
         os.makedirs(os.path.dirname(self.long_term_path), exist_ok=True)
         self.long_term.save_local(self.long_term_path)
 
-    def add_interaction(self, user_input: str, agent_output: str, user_id: Optional[str] = None):
+    def add_interaction(
+        self,
+        user_input: str,
+        agent_output: str,
+        user_id: Optional[str] = None,
+        tenant_id: str | None = None,
+    ):
         from core.safety_guard import SafetyGuard
 
         safe_input, _ = SafetyGuard.redact(user_input)
@@ -139,12 +157,13 @@ class MemoryManager:
                 "output": safe_output,
                 "timestamp": datetime.now().isoformat(),
                 "user_id": user_id,
+                "tenant_id": tenant_id,
             }
         )
         if len(self.short_term) > getattr(settings, "short_term_size", 10):
             self.short_term.pop(0)
 
-        if not self.has_consent(user_id):
+        if not self.has_consent(user_id, tenant_id):
             return
 
         if self.store is not None and hasattr(self.store, "save_memory"):
@@ -153,6 +172,7 @@ class MemoryManager:
                     user_id=str(user_id),
                     user_input=safe_input,
                     assistant_output=safe_output,
+                    tenant_id=tenant_id,
                 )
             except Exception as exc:
                 log_event(logger, 30, "governed_memory_write_failed", error_type=type(exc).__name__)
@@ -166,23 +186,25 @@ class MemoryManager:
             except Exception as exc:
                 log_event(logger, 30, "long_term_memory_write_failed", error_type=type(exc).__name__)
 
-    def retrieve_relevant_memories(self, query: str, user_id: Optional[str] = None, k: int = 5) -> List[str]:
-        if user_id and not self.has_consent(user_id):
+    def retrieve_relevant_memories(
+        self, query: str, user_id: Optional[str] = None, k: int = 5, tenant_id: str | None = None
+    ) -> List[str]:
+        if user_id and not self.has_consent(user_id, tenant_id):
             return []
         memories = []
         for mem in self.short_term:
-            if user_id and mem.get("user_id") != user_id:
+            if user_id and (mem.get("user_id") != user_id or mem.get("tenant_id") != tenant_id):
                 continue
             if any(word in mem["input"] for word in query.split()):
                 memories.append(f"当前对话：{mem['input']} -> {mem['output']}")
-        if self.has_consent(user_id) and self.store is not None and hasattr(self.store, "list_memory"):
+        if self.has_consent(user_id, tenant_id) and self.store is not None and hasattr(self.store, "list_memory"):
             try:
-                for item in reversed(self.store.list_memory(str(user_id), limit=k)):
+                for item in reversed(self.store.list_memory(str(user_id), limit=k, tenant_id=tenant_id)):
                     if any(word in item["input"] for word in query.split()):
                         memories.append(f"历史记忆：用户问：{item['input']} 执行：{item['output']}")
             except Exception as exc:
                 log_event(logger, 30, "governed_memory_retrieval_failed", error_type=type(exc).__name__)
-        elif self.has_consent(user_id) and self.long_term is not None:
+        elif self.has_consent(user_id, tenant_id) and self.long_term is not None:
             try:
                 docs = self.long_term.similarity_search(query, k=k)
                 for doc in docs:
@@ -193,8 +215,15 @@ class MemoryManager:
                 log_event(logger, 30, "long_term_memory_retrieval_failed", error_type=type(exc).__name__)
         return memories[:k]
 
-    def save_meta(self, user_input: str, agent_output: str, quality: float, user_id: str | None = None):
-        if user_id and not self.has_consent(user_id):
+    def save_meta(
+        self,
+        user_input: str,
+        agent_output: str,
+        quality: float,
+        user_id: str | None = None,
+        tenant_id: str | None = None,
+    ):
+        if user_id and not self.has_consent(user_id, tenant_id):
             return
         from core.safety_guard import SafetyGuard
 

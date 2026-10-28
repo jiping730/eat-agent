@@ -138,11 +138,13 @@ class ConversationRuntime:
         conversation_id: str | None = None,
         request_id: str | None = None,
         trace_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> ConversationResponse:
         if not isinstance(question, str) or not question.strip():
             raise ValueError("question 不能为空")
 
         resolved_user_id = user_id or str(uuid.uuid4())
+        resolved_tenant_id = self.store.resolve_tenant_id(resolved_user_id, tenant_id)
         resolved_conversation_id = conversation_id or resolved_user_id
         resolved_request_id = request_id or str(uuid.uuid4())
         resolved_trace_id = trace_id or new_trace_id()
@@ -160,6 +162,7 @@ class ConversationRuntime:
                         resolved_conversation_id,
                         resolved_user_id,
                         resolved_request_id,
+                        resolved_tenant_id,
                     )
                     if existing_response is not None:
                         return ConversationResponse.from_dict(existing_response)
@@ -169,6 +172,7 @@ class ConversationRuntime:
                         resolved_conversation_id,
                         resolved_request_id,
                         resolved_trace_id,
+                        resolved_tenant_id,
                     )
         finally:
             reset_observation_context(context_token)
@@ -180,6 +184,7 @@ class ConversationRuntime:
         conversation_id: str | None = None,
         request_id: str | None = None,
         trace_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> Iterator[str]:
         """Run one turn in a worker and yield replayable SSE frames.
 
@@ -192,6 +197,7 @@ class ConversationRuntime:
             raise ValueError("question 不能为空")
 
         resolved_user_id = user_id or str(uuid.uuid4())
+        resolved_tenant_id = self.store.resolve_tenant_id(resolved_user_id, tenant_id)
         resolved_conversation_id = conversation_id or resolved_user_id
         resolved_request_id = request_id or str(uuid.uuid4())
         resolved_trace_id = trace_id or new_trace_id()
@@ -224,6 +230,7 @@ class ConversationRuntime:
                             resolved_conversation_id,
                             resolved_user_id,
                             resolved_request_id,
+                            resolved_tenant_id,
                         )
                         if existing_response is not None:
                             response = ConversationResponse.from_dict(existing_response)
@@ -234,6 +241,7 @@ class ConversationRuntime:
                                 resolved_conversation_id,
                                 resolved_request_id,
                                 resolved_trace_id,
+                                resolved_tenant_id,
                                 stream_emit=emitter.emit,
                                 cancel_event=cancel_event,
                             )
@@ -273,13 +281,15 @@ class ConversationRuntime:
         conversation_id: str,
         request_id: str | None = None,
         trace_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> ConversationResponse:
         """Regenerate the latest assistant turn without duplicating its user message."""
 
         resolved_request_id = request_id or str(uuid.uuid4())
         resolved_trace_id = trace_id or new_trace_id()
-        snapshot = self.store.load(conversation_id, user_id, include_metadata=True)
-        latest = self.store.latest_user_message(conversation_id, user_id)
+        resolved_tenant_id = self.store.resolve_tenant_id(user_id, tenant_id)
+        snapshot = self.store.load(conversation_id, user_id, include_metadata=True, tenant_id=resolved_tenant_id)
+        latest = self.store.latest_user_message(conversation_id, user_id, resolved_tenant_id)
         latest_index = next(
             (index for index, message in enumerate(snapshot.messages) if message.get("id") == latest["id"]),
             None,
@@ -300,6 +310,7 @@ class ConversationRuntime:
                         conversation_id,
                         user_id,
                         resolved_request_id,
+                        resolved_tenant_id,
                     )
                     if existing_response is not None:
                         return ConversationResponse.from_dict(existing_response)
@@ -309,6 +320,7 @@ class ConversationRuntime:
                         conversation_id,
                         resolved_request_id,
                         resolved_trace_id,
+                        resolved_tenant_id,
                         history_messages=history,
                         persist_user_message=False,
                         regenerate=True,
@@ -323,6 +335,7 @@ class ConversationRuntime:
         conversation_id: str,
         request_id: str,
         trace_id: str,
+        tenant_id: str | None,
         *,
         stream_emit: Callable[..., Any] | None = None,
         cancel_event: threading.Event | None = None,
@@ -332,8 +345,9 @@ class ConversationRuntime:
     ) -> ConversationResponse:
         if cancel_event is not None and cancel_event.is_set():
             raise StreamCancelled("stream cancelled by client")
-        snapshot = self.store.load(conversation_id, user_id)
-        profile_context = self.profile_service.workflow_context(user_id)
+        snapshot = self.store.load(conversation_id, user_id, tenant_id=tenant_id)
+        profile_context = self.profile_service.workflow_context(user_id, tenant_id)
+        tenant_settings = self.store.get_tenant_settings(tenant_id) if tenant_id else {}
         input_safety = SafetyGuard.inspect_user_input(question)
         # Never put direct identifiers or credentials into the workflow state
         # or durable conversation history.  The original text is not needed
@@ -348,6 +362,8 @@ class ConversationRuntime:
         initial_state: dict[str, Any] = {
             "messages": [*safe_history, user_message],
             "user_id": user_id,
+            "tenant_id": tenant_id,
+            "tenant_settings": tenant_settings,
             "memory_context": [],
             "user_profile": profile_context,
             "current_goal": snapshot.current_goal or "",
@@ -417,7 +433,10 @@ class ConversationRuntime:
         if grill_action == "fallback":
             record_fallback("grill_fallback")
         if grill_action not in {"clarify", "fallback", "pending_confirmation", "reject", "switch", "multi_task"}:
-            self.memory_mgr.add_interaction(question, answer, user_id)
+            try:
+                self.memory_mgr.add_interaction(question, answer, user_id, tenant_id)
+            except TypeError:
+                self.memory_mgr.add_interaction(question, answer, user_id)
 
         response_type = {
             "advise": "advice",
@@ -462,12 +481,14 @@ class ConversationRuntime:
             target_field=target_field,
             response_payload=response.to_dict(),
             persist_user_message=persist_user_message,
+            tenant_id=tenant_id,
         )
         response = replace(response, message_id=message_id)
         self.store.update_idempotent_response(
             conversation_id=conversation_id,
             request_id=request_id,
             response_payload=response.to_dict(),
+            tenant_id=tenant_id,
         )
 
         record_conversation(response_type, grill_action or "none", elapsed)

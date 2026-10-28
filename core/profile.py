@@ -56,11 +56,18 @@ class ProfileService:
     def __init__(self, store: ConversationStore) -> None:
         self.store = store
 
-    def get(self, user_id: str) -> dict[str, Any]:
-        return self.store.export_user_profile(user_id)
+    def get(self, user_id: str, tenant_id: str | None = None) -> dict[str, Any]:
+        return self.store.export_user_profile(user_id, tenant_id)
 
-    def update(self, user_id: str, payload: UserProfileUpdate, *, actor: str | None = None) -> dict[str, Any]:
-        current = self.store.export_user_profile(user_id)
+    def update(
+        self,
+        user_id: str,
+        payload: UserProfileUpdate,
+        *,
+        actor: str | None = None,
+        tenant_id: str | None = None,
+    ) -> dict[str, Any]:
+        current = self.store.export_user_profile(user_id, tenant_id)
         current_profile = UserProfileData.model_validate(current.get("profile") or {})
         changes = payload.model_dump(
             mode="json",
@@ -84,18 +91,25 @@ class ProfileService:
             profile=validated.model_dump(mode="json"),
             consent_granted=bool(consent_granted),
             actor=actor or user_id,
+            tenant_id=tenant_id,
         )
 
-    def set_consent(self, user_id: str, granted: bool, *, actor: str | None = None) -> dict[str, Any]:
-        return self.store.set_user_profile_consent(user_id, granted, actor=actor or user_id)
+    def set_consent(
+        self, user_id: str, granted: bool, *, actor: str | None = None, tenant_id: str | None = None
+    ) -> dict[str, Any]:
+        return self.store.set_user_profile_consent(
+            user_id, granted, actor=actor or user_id, tenant_id=tenant_id
+        )
 
-    def delete(self, user_id: str, *, actor: str | None = None) -> dict[str, Any]:
-        return self.store.delete_user_profile(user_id, actor=actor or user_id)
+    def delete(
+        self, user_id: str, *, actor: str | None = None, tenant_id: str | None = None
+    ) -> dict[str, Any]:
+        return self.store.delete_user_profile(user_id, actor=actor or user_id, tenant_id=tenant_id)
 
-    def workflow_context(self, user_id: str) -> dict[str, Any]:
+    def workflow_context(self, user_id: str, tenant_id: str | None = None) -> dict[str, Any]:
         """Return only consented profile data and Grill-compatible fields."""
 
-        current = self.get(user_id)
+        current = self.get(user_id, tenant_id)
         if not current.get("consent_granted"):
             return {}
         profile = dict(current.get("profile") or {})

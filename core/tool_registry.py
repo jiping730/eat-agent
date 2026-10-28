@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -537,11 +538,23 @@ def retrieve_knowledge_result(
     *,
     score_threshold: float = 2.0,
     access_groups: set[str] | None = None,
+    tenant_id: str | None = None,
 ) -> ToolResult:
     """Run local retrieval and preserve document provenance."""
 
     try:
-        retriever = get_retriever_with_score(score_threshold=score_threshold, access_groups=access_groups)
+        index_dir = None
+        source_dir = None
+        if tenant_id:
+            safe_tenant_id = "".join(char for char in str(tenant_id) if char.isalnum() or char in {"-", "_"})
+            index_dir = str(Path(settings.vector_store_path) / "tenants" / safe_tenant_id)
+            source_dir = index_dir
+        retriever = get_retriever_with_score(
+            score_threshold=score_threshold,
+            access_groups=access_groups,
+            index_dir=index_dir,
+            source_dir=source_dir,
+        )
         docs = retriever(query)
     except Exception as exc:
         raise ToolTransientError("知识库暂时不可用") from exc
@@ -623,7 +636,11 @@ def search_web(query: str) -> str:
 
 def _retrieval_handler(query: str, context: Mapping[str, Any]) -> ToolResult:
     access_groups = context.get("access_groups")
-    return retrieve_knowledge_result(query, access_groups=set(access_groups) if access_groups else None)
+    return retrieve_knowledge_result(
+        query,
+        access_groups=set(access_groups) if access_groups else None,
+        tenant_id=str(context.get("tenant_id")) if context.get("tenant_id") else None,
+    )
 
 
 def _calorie_handler(query: str, context: Mapping[str, Any]) -> ToolResult:
@@ -641,7 +658,11 @@ def _calorie_handler(query: str, context: Mapping[str, Any]) -> ToolResult:
             sources=[{"type": "offline", "source": "local_fallback"}],
         )
     access_groups = context.get("access_groups")
-    return retrieve_knowledge_result(query, access_groups=set(access_groups) if access_groups else None)
+    return retrieve_knowledge_result(
+        query,
+        access_groups=set(access_groups) if access_groups else None,
+        tenant_id=str(context.get("tenant_id")) if context.get("tenant_id") else None,
+    )
 
 
 def _meal_planner_handler(_: str, context: Mapping[str, Any]) -> ToolResult:

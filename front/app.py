@@ -38,6 +38,7 @@ from core.observability import (
 from core.profile import ProfileService, UserProfileUpdate
 from core.persistence import ConversationAccessError
 from core.rate_limiter import SlidingWindowRateLimiter
+from core.tenant import TenantContext, TenantService
 from front.schemas import (
     AskRequest,
     AskResponse,
@@ -61,6 +62,12 @@ from front.schemas import (
     UserProfileResponse,
     UserProfileUpdateRequest,
     UserResponse,
+    TenantCreateRequest,
+    TenantListResponse,
+    TenantMemberRequest,
+    TenantRoleUpdateRequest,
+    TenantSettingsUpdateRequest,
+    TenantUpdateRequest,
 )
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -85,6 +92,7 @@ configure_optional_observability()
 runtime = ConversationRuntime()
 knowledge_service = KnowledgeBaseService(runtime.store)
 profile_service = ProfileService(runtime.store)
+tenant_service = TenantService(runtime.store)
 auth_service = AuthService()
 rate_limiter = SlidingWindowRateLimiter(settings.rate_limit_per_minute, redis_url=settings.redis_url)
 set_app_info(settings.app_version, settings.app_env)
@@ -136,7 +144,13 @@ def _platform_user_id(request: Request, data: dict | None = None) -> str:
     return requested_user_id.strip()
 
 
-def _knowledge_admin(request: Request) -> str:
+def _tenant_context(request: Request, user_id: str | None = None) -> TenantContext:
+    resolved_user_id = user_id or _platform_user_id(request)
+    requested_tenant_id = request.headers.get("X-Tenant-ID", "").strip() or None
+    return tenant_service.resolve(resolved_user_id, requested_tenant_id)
+
+
+def _legacy_knowledge_admin(request: Request) -> str:
     """Return the verified actor for knowledge administration endpoints."""
 
     principal: AuthPrincipal | None = getattr(request.state, "principal", None)
@@ -153,6 +167,22 @@ def _knowledge_admin(request: Request) -> str:
     if header_user_id and header_user_id in configured_ids:
         return header_user_id
     raise PermissionError("需要知识库管理员身份")
+
+
+def _knowledge_admin(request: Request) -> str:
+    """Require an active tenant admin for knowledge-base administration."""
+
+    user_id = _platform_user_id(request)
+    context = _tenant_context(request, user_id)
+    configured_ids = {
+        value.strip() for value in settings.knowledge_admin_user_ids.split(",") if value.strip()
+    }
+    principal: AuthPrincipal | None = getattr(request.state, "principal", None)
+    if context.is_admin or user_id in configured_ids:
+        return user_id
+    if principal is not None and set(principal.roles).intersection({"admin", "knowledge_admin", "service"}):
+        return user_id
+    raise PermissionError("需要租户管理员权限")
 
 
 def _token_response(user, token_pair) -> dict:
@@ -355,6 +385,7 @@ def login(data: CredentialsRequest, request: Request):
     if user is None or not user.is_active or not auth_service.verify_password(user.password_hash, data.password):
         log_event(logger, 30, "auth_login_failed")
         return _error_response(request, "用户名或密码错误", 401, "invalid_credentials")
+    runtime.store.get_or_create_personal_tenant(user.id)
     tokens = auth_service.issue_tokens(user.id, tuple(user.roles or []))
     log_event(logger, 20, "auth_login_succeeded", user=fingerprint(user.id))
     runtime.store.save_refresh_token(
@@ -373,6 +404,7 @@ def refresh(data: RefreshRequest, request: Request):
     user = runtime.store.get_user(token_record.user_id)
     if user is None or not user.is_active:
         return _error_response(request, "用户不可用", 401, "user_unavailable")
+    runtime.store.get_or_create_personal_tenant(user.id)
     runtime.store.revoke_refresh_token(hash_refresh_token(data.refresh_token))
     tokens = auth_service.issue_tokens(user.id, tuple(user.roles or []))
     log_event(logger, 20, "auth_refresh_succeeded", user=fingerprint(user.id))
@@ -400,13 +432,90 @@ def me(request: Request):
     return {"id": user.id, "username": user.username, "roles": user.roles or []}
 
 
+@app.get("/me/tenants", response_model=TenantListResponse)
+def list_my_tenants(request: Request):
+    return {"items": tenant_service.list_for_user(_platform_user_id(request))}
+
+
+@app.post("/tenants", status_code=201)
+def create_tenant(data: TenantCreateRequest, request: Request):
+    return tenant_service.create(_platform_user_id(request), data.name, data.slug)
+
+
+@app.get("/tenants/{tenant_id}")
+def get_tenant(tenant_id: str, request: Request):
+    context = tenant_service.require_member(_platform_user_id(request), tenant_id)
+    tenant = runtime.store.get_tenant(tenant_id)
+    if tenant is None:
+        raise KeyError("租户不存在")
+    payload = runtime.store._tenant_payload(tenant)
+    payload["role"] = context.role
+    payload["members"] = runtime.store.list_members(tenant_id)
+    return payload
+
+
+@app.put("/tenants/{tenant_id}")
+def update_tenant(tenant_id: str, data: TenantUpdateRequest, request: Request):
+    tenant_service.require_role(_platform_user_id(request), tenant_id, {"owner", "admin"})
+    return runtime.store.update_tenant(tenant_id, name=data.name, slug=data.slug)
+
+
+@app.delete("/tenants/{tenant_id}")
+def delete_tenant(tenant_id: str, request: Request):
+    tenant_service.require_role(_platform_user_id(request), tenant_id, {"owner"})
+    runtime.store.archive_tenant(tenant_id)
+    return {"status": "deleted"}
+
+
+@app.post("/tenants/{tenant_id}/members")
+def add_tenant_member(tenant_id: str, data: TenantMemberRequest, request: Request):
+    context = tenant_service.require_role(_platform_user_id(request), tenant_id, {"owner", "admin"})
+    if data.role == "owner" and context.role != "owner":
+        raise PermissionError("只有租户所有者可以授予 owner 角色")
+    return runtime.store.add_or_update_member(tenant_id, user_id=data.user_id, role=data.role)
+
+
+@app.put("/tenants/{tenant_id}/members/{user_id}")
+def update_tenant_member(tenant_id: str, user_id: str, data: TenantRoleUpdateRequest, request: Request):
+    context = tenant_service.require_role(_platform_user_id(request), tenant_id, {"owner", "admin"})
+    if data.role == "owner" and context.role != "owner":
+        raise PermissionError("只有租户所有者可以授予 owner 角色")
+    return runtime.store.add_or_update_member(tenant_id, user_id=user_id, role=data.role)
+
+
+@app.delete("/tenants/{tenant_id}/members/{user_id}")
+def remove_tenant_member(tenant_id: str, user_id: str, request: Request):
+    context = tenant_service.require_role(_platform_user_id(request), tenant_id, {"owner", "admin"})
+    member = runtime.store.get_membership(tenant_id, user_id)
+    if member is not None and member.role == "owner" and context.role != "owner":
+        raise PermissionError("只有租户所有者可以移除 owner 角色")
+    runtime.store.remove_member(tenant_id, user_id)
+    return {"status": "removed"}
+
+
+@app.get("/tenants/{tenant_id}/settings")
+def get_tenant_settings(tenant_id: str, request: Request):
+    tenant_service.require_member(_platform_user_id(request), tenant_id)
+    return runtime.store.get_tenant_settings(tenant_id)
+
+
+@app.put("/tenants/{tenant_id}/settings")
+def update_tenant_settings(tenant_id: str, data: TenantSettingsUpdateRequest, request: Request):
+    tenant_service.require_role(_platform_user_id(request), tenant_id, {"owner", "admin"})
+    return runtime.store.update_tenant_settings(
+        tenant_id,
+        data.model_dump(mode="json", exclude_unset=True),
+    )
+
+
 @app.post("/memory/consent")
 @app.post("/me/memory/consent")
 def update_memory_consent(data: MemoryConsentRequest, request: Request):
     """Store explicit user consent; withdrawing it erases durable memory."""
 
     user_id = _platform_user_id(request)
-    granted = runtime.memory_mgr.set_consent(user_id, data.granted)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    granted = runtime.memory_mgr.set_consent(user_id, data.granted, tenant_id)
     log_event(logger, 20, "memory_consent_updated", user=fingerprint(user_id), granted=granted)
     return {"status": "updated", "granted": granted}
 
@@ -416,7 +525,8 @@ def update_memory_consent(data: MemoryConsentRequest, request: Request):
 @app.get("/me/memory/export")
 def export_memory(request: Request):
     user_id = _platform_user_id(request)
-    payload = runtime.memory_mgr.export_user_memory(user_id)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    payload = runtime.memory_mgr.export_user_memory(user_id, tenant_id)
     payload["user_id"] = user_id
     return payload
 
@@ -425,102 +535,131 @@ def export_memory(request: Request):
 @app.delete("/me/memory")
 def delete_memory(request: Request):
     user_id = _platform_user_id(request)
-    deleted = runtime.memory_mgr.delete_user_memory(user_id, revoke_consent=True)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    deleted = runtime.memory_mgr.delete_user_memory(user_id, revoke_consent=True, tenant_id=tenant_id)
     log_event(logger, 20, "memory_deleted", user=fingerprint(user_id), record_count=deleted)
     return {"status": "deleted", "deleted_count": deleted, "consent": False}
 
 
 @app.get("/me/profile", response_model=UserProfileResponse)
 def get_profile(request: Request):
-    return profile_service.get(_platform_user_id(request))
+    user_id = _platform_user_id(request)
+    return profile_service.get(user_id, _tenant_context(request, user_id).tenant_id)
 
 
 @app.put("/me/profile", response_model=UserProfileResponse)
 def update_profile(data: UserProfileUpdateRequest, request: Request):
     user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
     payload = UserProfileUpdate.model_validate(data.model_dump(mode="json", exclude_unset=True))
-    return profile_service.update(user_id, payload, actor=user_id)
+    return profile_service.update(user_id, payload, actor=user_id, tenant_id=tenant_id)
 
 
 @app.post("/me/profile/consent", response_model=UserProfileResponse)
 def update_profile_consent(data: ProfileConsentRequest, request: Request):
     user_id = _platform_user_id(request)
-    return profile_service.set_consent(user_id, data.granted, actor=user_id)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    return profile_service.set_consent(user_id, data.granted, actor=user_id, tenant_id=tenant_id)
 
 
 @app.get("/me/profile/export", response_model=UserProfileResponse)
 def export_profile(request: Request):
-    return profile_service.get(_platform_user_id(request))
+    user_id = _platform_user_id(request)
+    return profile_service.get(user_id, _tenant_context(request, user_id).tenant_id)
 
 
 @app.delete("/me/profile", response_model=UserProfileResponse)
 def delete_profile(request: Request):
     user_id = _platform_user_id(request)
-    return profile_service.delete(user_id, actor=user_id)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    return profile_service.delete(user_id, actor=user_id, tenant_id=tenant_id)
 
 
 @app.get("/admin/knowledge/documents", response_model=KnowledgeDocumentListResponse)
 def list_knowledge_documents(request: Request, status: str | None = None):
     _knowledge_admin(request)
-    return {"items": knowledge_service.list_documents(status=status)}
+    tenant_id = _tenant_context(request).tenant_id
+    return {"items": knowledge_service.list_documents(status=status, tenant_id=tenant_id)}
 
 
 @app.post("/admin/knowledge/documents", status_code=201)
 def upload_knowledge_document(data: KnowledgeDocumentUploadRequest, request: Request):
     actor = _knowledge_admin(request)
+    tenant_id = _tenant_context(request).tenant_id
     return knowledge_service.upload_document(
         source_name=data.source_name,
         content=data.content,
         title=data.title,
         access_groups=data.access_groups,
         actor=actor,
+        tenant_id=tenant_id,
     )
 
 
 @app.get("/admin/knowledge/documents/{document_id}")
 def knowledge_document_detail(document_id: str, request: Request):
     _knowledge_admin(request)
-    return knowledge_service.get_document(document_id)
+    return knowledge_service.get_document(document_id, _tenant_context(request).tenant_id)
 
 
 @app.post("/admin/knowledge/documents/{document_id}/review")
 def review_knowledge_document(document_id: str, data: KnowledgeReviewRequest, request: Request):
     actor = _knowledge_admin(request)
-    return knowledge_service.review_document(document_id, actor=actor, approved=data.approved, note=data.note)
+    return knowledge_service.review_document(
+        document_id,
+        actor=actor,
+        approved=data.approved,
+        note=data.note,
+        tenant_id=_tenant_context(request).tenant_id,
+    )
 
 
 @app.post("/admin/knowledge/documents/{document_id}/publish")
 def publish_knowledge_document(document_id: str, request: Request):
-    return knowledge_service.publish_document(document_id, actor=_knowledge_admin(request))
+    return knowledge_service.publish_document(
+        document_id,
+        actor=_knowledge_admin(request),
+        tenant_id=_tenant_context(request).tenant_id,
+    )
 
 
 @app.post("/admin/knowledge/documents/{document_id}/unpublish")
 def unpublish_knowledge_document(document_id: str, request: Request):
-    return knowledge_service.unpublish_document(document_id, actor=_knowledge_admin(request))
+    return knowledge_service.unpublish_document(
+        document_id,
+        actor=_knowledge_admin(request),
+        tenant_id=_tenant_context(request).tenant_id,
+    )
 
 
 @app.post("/admin/knowledge/index/build")
 def build_knowledge_index(data: KnowledgeBuildRequest, request: Request):
     if not data.confirm:
         raise ValueError("必须确认构建索引")
-    return knowledge_service.build_index(actor=_knowledge_admin(request))
+    return knowledge_service.build_index(
+        actor=_knowledge_admin(request), tenant_id=_tenant_context(request).tenant_id
+    )
 
 
 @app.get("/admin/knowledge/index/builds")
 def list_knowledge_builds(request: Request, limit: int = 20):
     _knowledge_admin(request)
-    return {"items": knowledge_service.list_builds(limit=limit)}
+    return {"items": knowledge_service.list_builds(limit=limit, tenant_id=_tenant_context(request).tenant_id)}
 
 
 @app.get("/admin/knowledge/index/builds/{build_id}")
 def knowledge_build_detail(build_id: str, request: Request):
     _knowledge_admin(request)
-    return knowledge_service.get_build(build_id)
+    return knowledge_service.get_build(build_id, _tenant_context(request).tenant_id)
 
 
 @app.post("/admin/knowledge/index/rollback")
 def rollback_knowledge_index(data: KnowledgeRollbackRequest, request: Request):
-    return knowledge_service.rollback(data.target, actor=_knowledge_admin(request))
+    return knowledge_service.rollback(
+        data.target,
+        actor=_knowledge_admin(request),
+        tenant_id=_tenant_context(request).tenant_id,
+    )
 
 
 @app.post("/admin/knowledge/retrieval/test")
@@ -530,18 +669,20 @@ def test_knowledge_retrieval(data: KnowledgeRetrievalTestRequest, request: Reque
         actor=_knowledge_admin(request),
         top_k=data.top_k,
         access_groups=data.access_groups,
+        tenant_id=_tenant_context(request).tenant_id,
     )
 
 
 @app.get("/admin/knowledge/analytics")
 def knowledge_analytics(request: Request):
     _knowledge_admin(request)
-    return knowledge_service.analytics()
+    return knowledge_service.analytics(tenant_id=_tenant_context(request).tenant_id)
 
 
 @app.get("/conversations", response_model=ConversationListResponse)
 def list_conversations(request: Request):
     user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
     return {
         "items": [
             {
@@ -550,7 +691,7 @@ def list_conversations(request: Request):
                 "updated_at": item.updated_at.isoformat(),
                 "version": item.version,
             }
-            for item in runtime.store.list_conversations(user_id)
+            for item in runtime.store.list_conversations(user_id, tenant_id)
         ]
     }
 
@@ -558,10 +699,12 @@ def list_conversations(request: Request):
 @app.post("/conversations", status_code=201)
 def create_conversation(data: ConversationCreateRequest, request: Request):
     user_id = _platform_user_id(request)
+    tenant_id = _tenant_context(request, user_id).tenant_id
     conversation = runtime.store.create_conversation(
         conversation_id=str(uuid.uuid4()),
         user_id=user_id,
         title=data.title,
+        tenant_id=tenant_id,
     )
     return {"id": conversation.id, "title": conversation.title, "expires_at": conversation.expires_at.isoformat()}
 
@@ -569,7 +712,8 @@ def create_conversation(data: ConversationCreateRequest, request: Request):
 @app.get("/conversations/{conversation_id}", response_model=ConversationDetailResponse)
 def conversation_detail(conversation_id: str, request: Request):
     user_id = _platform_user_id(request)
-    snapshot = runtime.store.load(conversation_id, user_id, include_metadata=True)
+    tenant_id = _tenant_context(request, user_id).tenant_id
+    snapshot = runtime.store.load(conversation_id, user_id, include_metadata=True, tenant_id=tenant_id)
     return {
         "id": snapshot.conversation_id,
         "title": snapshot.title,
@@ -580,13 +724,15 @@ def conversation_detail(conversation_id: str, request: Request):
 
 @app.post("/conversations/{conversation_id}/archive")
 def archive_conversation(conversation_id: str, request: Request):
-    runtime.store.archive_conversation(conversation_id, _platform_user_id(request))
+    user_id = _platform_user_id(request)
+    runtime.store.archive_conversation(conversation_id, user_id, _tenant_context(request, user_id).tenant_id)
     return {"status": "archived"}
 
 
 @app.delete("/conversations/{conversation_id}")
 def delete_conversation(conversation_id: str, request: Request):
-    runtime.store.delete_conversation(conversation_id, _platform_user_id(request))
+    user_id = _platform_user_id(request)
+    runtime.store.delete_conversation(conversation_id, user_id, _tenant_context(request, user_id).tenant_id)
     return {"status": "deleted"}
 
 
@@ -594,12 +740,14 @@ def delete_conversation(conversation_id: str, request: Request):
 def ask(data: AskRequest, request: Request):
     payload = data.model_dump()
     user_id = _platform_user_id(request, payload)
+    tenant_id = _tenant_context(request, user_id).tenant_id
     response = runtime.ask(
         data.question,
         user_id=user_id,
         conversation_id=data.conversation_id,
         request_id=_request_id(request),
         trace_id=_trace_id(request),
+        tenant_id=tenant_id,
     )
     return response.to_dict()
 
@@ -608,12 +756,14 @@ def ask(data: AskRequest, request: Request):
 def ask_stream(data: AskRequest, request: Request):
     payload = data.model_dump()
     user_id = _platform_user_id(request, payload)
+    tenant_id = _tenant_context(request, user_id).tenant_id
     stream = runtime.ask_stream(
         data.question,
         user_id=user_id,
         conversation_id=data.conversation_id,
         request_id=_request_id(request),
         trace_id=_trace_id(request),
+        tenant_id=tenant_id,
     )
     return StreamingResponse(
         stream,
@@ -628,22 +778,26 @@ def ask_stream(data: AskRequest, request: Request):
 
 @app.post("/conversations/{conversation_id}/regenerate", response_model=AskResponse)
 def regenerate(conversation_id: str, request: Request):
+    user_id = _platform_user_id(request)
     response = runtime.regenerate(
-        user_id=_platform_user_id(request),
+        user_id=user_id,
         conversation_id=conversation_id,
         request_id=_request_id(request),
         trace_id=_trace_id(request),
+        tenant_id=_tenant_context(request, user_id).tenant_id,
     )
     return response.to_dict()
 
 
 @app.post("/messages/{message_id}/feedback")
 def message_feedback(message_id: int, data: MessageFeedbackRequest, request: Request):
+    user_id = _platform_user_id(request)
     feedback = runtime.store.save_feedback(
         message_id=message_id,
-        user_id=_platform_user_id(request),
+        user_id=user_id,
         rating=data.rating,
         comment=data.comment,
+        tenant_id=_tenant_context(request, user_id).tenant_id,
     )
     return {"status": "saved", "id": feedback.id, "message_id": feedback.message_id, "rating": feedback.rating}
 

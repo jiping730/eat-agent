@@ -656,16 +656,32 @@ class ModelGateway:
 class GatewayLLM:
     """Minimal LangChain-compatible adapter used by the existing Workflow."""
 
-    def __init__(self, gateway: ModelGateway, *, task: str, user_id: str | None = None) -> None:
+    def __init__(
+        self,
+        gateway: ModelGateway,
+        *,
+        task: str,
+        user_id: str | None = None,
+        preferred_model: str | None = None,
+    ) -> None:
         self.gateway = gateway
         self.task = task
         self.user_id = user_id
+        self.preferred_model = preferred_model
 
     def invoke(self, prompt: str) -> str:
-        return self.gateway.complete(prompt, task=self.task, user_id=self.user_id).content
+        request = self.gateway.build_request(self.task, preferred_model=self.preferred_model)
+        return self.gateway.complete(prompt, request=request, task=self.task, user_id=self.user_id).content
 
     def stream(self, prompt: str, *, cancel_event: Any | None = None) -> Iterator[str]:
-        return self.gateway.stream(prompt, task=self.task, user_id=self.user_id, cancel_event=cancel_event)
+        request = self.gateway.build_request(self.task, preferred_model=self.preferred_model)
+        return self.gateway.stream(
+            prompt,
+            request=request,
+            task=self.task,
+            user_id=self.user_id,
+            cancel_event=cancel_event,
+        )
 
 
 _DEFAULT_GATEWAY = ModelGateway()
@@ -675,5 +691,9 @@ def get_model_gateway() -> ModelGateway:
     return _DEFAULT_GATEWAY
 
 
-def get_llm(*, task: str = "answer", user_id: str | None = None) -> GatewayLLM:
-    return GatewayLLM(get_model_gateway(), task=task, user_id=user_id)
+def get_llm(
+    *, task: str = "answer", user_id: str | None = None, preferred_model: str | None = None
+) -> GatewayLLM:
+    return GatewayLLM(
+        get_model_gateway(), task=task, user_id=user_id, preferred_model=preferred_model
+    )

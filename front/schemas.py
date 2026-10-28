@@ -32,6 +32,36 @@ class UserResponse(BaseModel):
     roles: list[str] = Field(default_factory=list)
 
 
+class TenantCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    slug: str | None = Field(default=None, min_length=2, max_length=120)
+
+
+class TenantUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    slug: str | None = Field(default=None, min_length=2, max_length=120)
+
+
+class TenantMemberRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=128)
+    role: Literal["owner", "admin", "member"] = "member"
+
+
+class TenantRoleUpdateRequest(BaseModel):
+    role: Literal["owner", "admin", "member"]
+
+
+class TenantSettingsUpdateRequest(BaseModel):
+    model_alias: str | None = Field(default=None, max_length=128)
+    grill_profile: dict[str, Any] | None = None
+    knowledge_scope: list[str] | None = Field(default=None, max_length=20)
+    usage_limit: dict[str, Any] | None = None
+
+
+class TenantListResponse(BaseModel):
+    items: list[dict[str, Any]]
+
+
 class TokenResponse(BaseModel):
     access_token: str
     refresh_token: str
@@ -108,6 +138,7 @@ class ProfileConsentRequest(BaseModel):
 
 
 class UserProfileResponse(BaseModel):
+    tenant_id: str | None = None
     user_id: str
     profile: dict[str, Any]
     consent_granted: bool

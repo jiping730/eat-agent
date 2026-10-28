@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import threading
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from sqlalchemy import (
     Boolean,
@@ -23,8 +25,11 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     delete,
+    inspect,
     select,
+    text,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from config import settings
@@ -59,6 +64,53 @@ class Base(DeclarativeBase):
     pass
 
 
+class TenantRecord(Base):
+    """A small-platform workspace used as the isolation boundary."""
+
+    __tablename__ = "tenants"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    slug: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    owner_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class TenantMembershipRecord(Base):
+    """A user's role inside one tenant: owner, admin, or member."""
+
+    __tablename__ = "tenant_memberships"
+
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="member")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="active")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class TenantSettingsRecord(Base):
+    """Small, JSON-backed tenant configuration; no separate config service."""
+
+    __tablename__ = "tenant_settings"
+
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    model_alias: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    grill_profile: Mapped[Any] = mapped_column(JSON, default=dict, nullable=False)
+    knowledge_scope: Mapped[Any] = mapped_column(JSON, default=lambda: ["public"], nullable=False)
+    usage_limit: Mapped[Any] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
 class UserRecord(Base):
     __tablename__ = "users"
 
@@ -88,6 +140,7 @@ class ConversationRecord(Base):
     __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
     user_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
     title: Mapped[str] = mapped_column(String(200), default="新会话", nullable=False)
     current_goal: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -126,6 +179,7 @@ class MessageFeedbackRecord(Base):
     conversation_id: Mapped[str] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), index=True, nullable=False
     )
+    tenant_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
     user_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
     rating: Mapped[str] = mapped_column(String(16), nullable=False)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -144,6 +198,7 @@ class IdempotencyRecord(Base):
     conversation_id: Mapped[str] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), index=True, nullable=False
     )
+    tenant_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
     user_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
     request_id: Mapped[str] = mapped_column(String(128), nullable=False)
     response_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
@@ -157,6 +212,7 @@ class MemoryConsentRecord(Base):
 
     __tablename__ = "memory_consents"
 
+    tenant_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     granted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -170,6 +226,7 @@ class UserMemoryRecord(Base):
     __tablename__ = "user_memories"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
     user_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
     user_input: Mapped[str] = mapped_column(Text, nullable=False)
     assistant_output: Mapped[str] = mapped_column(Text, nullable=False)
@@ -182,6 +239,7 @@ class UserProfileRecord(Base):
 
     __tablename__ = "user_profiles"
 
+    tenant_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
     height_cm: Mapped[float | None] = mapped_column(Float, nullable=True)
     weight_kg: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -210,6 +268,7 @@ class UserProfileEventRecord(Base):
     __tablename__ = "user_profile_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
     user_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
     action: Mapped[str] = mapped_column(String(32), nullable=False)
     changed_fields: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
@@ -223,7 +282,8 @@ class KnowledgeDocumentRecord(Base):
     __tablename__ = "knowledge_documents"
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
-    source_name: Mapped[str] = mapped_column(String(256), unique=True, index=True, nullable=False)
+    tenant_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
+    source_name: Mapped[str] = mapped_column(String(256), index=True, nullable=False)
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(String(32), index=True, nullable=False, default="draft")
     latest_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -238,6 +298,8 @@ class KnowledgeDocumentRecord(Base):
         DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
     )
 
+    __table_args__ = (UniqueConstraint("tenant_id", "source_name", name="uq_knowledge_tenant_source_name"),)
+
 
 class KnowledgeDocumentVersionRecord(Base):
     """Immutable text snapshot for one managed document version."""
@@ -245,6 +307,7 @@ class KnowledgeDocumentVersionRecord(Base):
     __tablename__ = "knowledge_document_versions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
     document_id: Mapped[str] = mapped_column(
         ForeignKey("knowledge_documents.id", ondelete="CASCADE"), index=True, nullable=False
     )
@@ -263,6 +326,7 @@ class KnowledgeBuildRecord(Base):
     __tablename__ = "knowledge_builds"
 
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
     index_version: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
     status: Mapped[str] = mapped_column(String(32), index=True, nullable=False, default="building")
     phase: Mapped[str] = mapped_column(String(64), nullable=False, default="preparing")
@@ -281,6 +345,7 @@ class KnowledgeRetrievalEventRecord(Base):
     __tablename__ = "knowledge_retrieval_events"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(128), index=True, nullable=True)
     query: Mapped[str] = mapped_column(String(2_000), nullable=False)
     access_groups: Mapped[list[str]] = mapped_column(JSON, default=lambda: ["public"], nullable=False)
     result_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -296,6 +361,7 @@ class ConversationSnapshot:
     messages: list[dict[str, Any]]
     grill_context: dict[str, Any]
     current_goal: str | None
+    tenant_id: str | None = None
     title: str = "新会话"
     version: int = 1
     expires_at: datetime | None = None
@@ -307,6 +373,8 @@ class ConversationAccessError(PermissionError):
 
 class ConversationStore:
     """SQLAlchemy-backed store with SQLite support for local tests."""
+
+    _tenant_init_lock = threading.RLock()
 
     def __init__(self, database_url: str | None = None, *, auto_create_schema: bool | None = None) -> None:
         self.database_url = database_url or settings.database_url
@@ -325,10 +393,324 @@ class ConversationStore:
             should_create = auto_create_schema
         if should_create:
             Base.metadata.create_all(self.engine)
+            if self.database_url.startswith("sqlite"):
+                self._ensure_sqlite_compatibility()
+
+    def _ensure_sqlite_compatibility(self) -> None:
+        """Add newly introduced nullable columns to a pre-migration dev DB.
+
+        Production databases are migration-owned.  Local development has
+        historically used ``create_all`` and may contain an older app.db;
+        adding only nullable columns keeps that workflow usable without
+        pretending that ``create_all`` is a replacement for Alembic.
+        """
+
+        inspector = inspect(self.engine)
+        with self.engine.begin() as connection:
+            for table in Base.metadata.sorted_tables:
+                if table.name not in inspector.get_table_names():
+                    continue
+                existing = {item["name"] for item in inspector.get_columns(table.name)}
+                for column in table.columns:
+                    if column.name in existing:
+                        continue
+                    column_type = column.type.compile(dialect=self.engine.dialect)
+                    connection.exec_driver_sql(
+                        f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {column_type}'
+                    )
+                    existing.add(column.name)
+            connection.exec_driver_sql(
+                'UPDATE "conversations" SET "expires_at" = ? WHERE "expires_at" IS NULL',
+                (conversation_expiry().replace(tzinfo=None),),
+            )
 
     def ping(self) -> None:
         with self.engine.connect() as connection:
             connection.exec_driver_sql("SELECT 1")
+
+    @staticmethod
+    def _tenant_payload(tenant: TenantRecord, membership: TenantMembershipRecord | None = None) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "id": tenant.id,
+            "name": tenant.name,
+            "slug": tenant.slug,
+            "status": tenant.status,
+            "owner_id": tenant.owner_id,
+            "created_at": _as_utc(tenant.created_at).isoformat(),
+            "updated_at": _as_utc(tenant.updated_at).isoformat(),
+        }
+        if membership is not None:
+            payload.update({"role": membership.role, "membership_status": membership.status})
+        return payload
+
+    @staticmethod
+    def _tenant_slug(value: str) -> str:
+        normalized = "-".join(value.strip().lower().split())
+        normalized = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in normalized)
+        return normalized.strip("-_")[:120]
+
+    def get_membership(self, tenant_id: str, user_id: str) -> TenantMembershipRecord | None:
+        with self.session_factory() as session:
+            return session.get(TenantMembershipRecord, (tenant_id, user_id))
+
+    def get_tenant(self, tenant_id: str) -> TenantRecord | None:
+        with self.session_factory() as session:
+            return session.get(TenantRecord, tenant_id)
+
+    def get_or_create_personal_tenant(self, user_id: str) -> str:
+        """Return a stable personal workspace for legacy/user-only calls."""
+
+        tenant_id = str(uuid5(NAMESPACE_URL, f"eat-agent:personal:{user_id}"))
+        slug = f"personal-{tenant_id.replace('-', '')[:16]}"
+        with self._tenant_init_lock:
+            try:
+                with self.session_factory.begin() as session:
+                    tenant = session.get(TenantRecord, tenant_id)
+                    if tenant is None:
+                        now = utc_now()
+                        tenant = TenantRecord(
+                            id=tenant_id,
+                            name="个人空间",
+                            slug=slug,
+                            status="active",
+                            owner_id=user_id,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                        session.add(tenant)
+                    membership = session.get(TenantMembershipRecord, (tenant_id, user_id))
+                    if membership is None:
+                        session.add(
+                            TenantMembershipRecord(
+                                tenant_id=tenant_id,
+                                user_id=user_id,
+                                role="owner",
+                                status="active",
+                                created_at=utc_now(),
+                                updated_at=utc_now(),
+                            )
+                        )
+                    # Lazily scope rows from a pre-P2 local database to the
+                    # deterministic personal tenant of their original user.
+                    for table in (
+                        "conversations",
+                        "message_feedback",
+                        "idempotency_records",
+                        "user_memories",
+                        "user_profile_events",
+                        "memory_consents",
+                        "user_profiles",
+                    ):
+                        session.execute(
+                            text(f"UPDATE {table} SET tenant_id = :tenant_id WHERE user_id = :user_id AND tenant_id IS NULL"),
+                            {"tenant_id": tenant_id, "user_id": user_id},
+                        )
+                    for table, column in (
+                        ("knowledge_documents", "created_by"),
+                        ("knowledge_builds", "initiated_by"),
+                        ("knowledge_retrieval_events", "initiated_by"),
+                    ):
+                        session.execute(
+                            text(f"UPDATE {table} SET tenant_id = :tenant_id WHERE {column} = :user_id AND tenant_id IS NULL"),
+                            {"tenant_id": tenant_id, "user_id": user_id},
+                        )
+            except IntegrityError:
+                # Another process can win the first insert; the deterministic
+                # id/slug makes the retry safe and idempotent.
+                with self.session_factory.begin() as session:
+                    if session.get(TenantRecord, tenant_id) is None:
+                        raise
+                    if session.get(TenantMembershipRecord, (tenant_id, user_id)) is None:
+                        session.add(
+                            TenantMembershipRecord(
+                                tenant_id=tenant_id,
+                                user_id=user_id,
+                                role="owner",
+                                status="active",
+                                created_at=utc_now(),
+                                updated_at=utc_now(),
+                            )
+                        )
+        return tenant_id
+
+    def resolve_tenant_id(self, user_id: str, tenant_id: str | None = None) -> str:
+        if tenant_id:
+            return tenant_id
+        return self.get_or_create_personal_tenant(user_id)
+
+    def _scope_tenant(self, user_id: str, tenant_id: str | None) -> str:
+        return self.resolve_tenant_id(user_id, tenant_id)
+
+    def list_user_tenants(self, user_id: str) -> list[dict[str, Any]]:
+        self.get_or_create_personal_tenant(user_id)
+        with self.session_factory() as session:
+            rows = session.execute(
+                select(TenantRecord, TenantMembershipRecord)
+                .join(TenantMembershipRecord, TenantMembershipRecord.tenant_id == TenantRecord.id)
+                .where(
+                    TenantMembershipRecord.user_id == user_id,
+                    TenantMembershipRecord.status == "active",
+                    TenantRecord.status == "active",
+                )
+                .order_by(TenantRecord.created_at.asc())
+            ).all()
+            return [self._tenant_payload(tenant, membership) for tenant, membership in rows]
+
+    def create_tenant(self, *, tenant_id: str, name: str, slug: str, owner_id: str) -> dict[str, Any]:
+        normalized_name = name.strip()[:128]
+        normalized_slug = self._tenant_slug(slug or normalized_name)
+        if not normalized_name or not normalized_slug:
+            raise ValueError("租户名称和标识不能为空")
+        with self.session_factory.begin() as session:
+            if session.scalar(select(TenantRecord).where(TenantRecord.slug == normalized_slug)) is not None:
+                raise ValueError("租户标识已存在")
+            now = utc_now()
+            tenant = TenantRecord(
+                id=tenant_id,
+                name=normalized_name,
+                slug=normalized_slug,
+                status="active",
+                owner_id=owner_id,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(tenant)
+            session.add(
+                TenantMembershipRecord(
+                    tenant_id=tenant_id,
+                    user_id=owner_id,
+                    role="owner",
+                    status="active",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                TenantSettingsRecord(
+                    tenant_id=tenant_id,
+                    grill_profile={},
+                    knowledge_scope=["public"],
+                    usage_limit={},
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            return self._tenant_payload(tenant, session.get(TenantMembershipRecord, (tenant_id, owner_id)))
+
+    def update_tenant(self, tenant_id: str, *, name: str | None = None, slug: str | None = None) -> dict[str, Any]:
+        with self.session_factory.begin() as session:
+            tenant = session.get(TenantRecord, tenant_id)
+            if tenant is None:
+                raise KeyError("租户不存在")
+            if name is not None and name.strip():
+                tenant.name = name.strip()[:128]
+            if slug is not None and slug.strip():
+                normalized_slug = self._tenant_slug(slug)
+                conflict = session.scalar(
+                    select(TenantRecord).where(TenantRecord.slug == normalized_slug, TenantRecord.id != tenant_id)
+                )
+                if conflict is not None:
+                    raise ValueError("租户标识已存在")
+                tenant.slug = normalized_slug
+            tenant.updated_at = utc_now()
+            return self._tenant_payload(tenant)
+
+    def archive_tenant(self, tenant_id: str) -> None:
+        with self.session_factory.begin() as session:
+            tenant = session.get(TenantRecord, tenant_id)
+            if tenant is None:
+                raise KeyError("租户不存在")
+            tenant.status = "deleted"
+            tenant.updated_at = utc_now()
+
+    def add_or_update_member(self, tenant_id: str, *, user_id: str, role: str) -> dict[str, Any]:
+        if role not in {"owner", "admin", "member"}:
+            raise ValueError("租户角色不合法")
+        with self.session_factory.begin() as session:
+            if session.get(TenantRecord, tenant_id) is None:
+                raise KeyError("租户不存在")
+            now = utc_now()
+            member = session.get(TenantMembershipRecord, (tenant_id, user_id))
+            if member is None:
+                member = TenantMembershipRecord(
+                    tenant_id=tenant_id, user_id=user_id, role=role, status="active", created_at=now, updated_at=now
+                )
+                session.add(member)
+            else:
+                member.role = role
+                member.status = "active"
+                member.updated_at = now
+            return {"tenant_id": tenant_id, "user_id": user_id, "role": member.role, "status": member.status}
+
+    def remove_member(self, tenant_id: str, user_id: str) -> None:
+        with self.session_factory.begin() as session:
+            member = session.get(TenantMembershipRecord, (tenant_id, user_id))
+            if member is None:
+                raise KeyError("租户成员不存在")
+            if member.role == "owner":
+                owners = session.scalars(
+                    select(TenantMembershipRecord).where(
+                        TenantMembershipRecord.tenant_id == tenant_id,
+                        TenantMembershipRecord.role == "owner",
+                        TenantMembershipRecord.status == "active",
+                    )
+                ).all()
+                if len(owners) <= 1:
+                    raise ValueError("租户至少需要保留一名所有者")
+            session.delete(member)
+
+    def list_members(self, tenant_id: str) -> list[dict[str, Any]]:
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(TenantMembershipRecord)
+                .where(TenantMembershipRecord.tenant_id == tenant_id, TenantMembershipRecord.status == "active")
+                .order_by(TenantMembershipRecord.created_at.asc())
+            ).all()
+            return [
+                {"tenant_id": item.tenant_id, "user_id": item.user_id, "role": item.role, "status": item.status}
+                for item in rows
+            ]
+
+    def get_tenant_settings(self, tenant_id: str) -> dict[str, Any]:
+        with self.session_factory() as session:
+            settings_record = session.get(TenantSettingsRecord, tenant_id)
+            if settings_record is None:
+                return {
+                    "tenant_id": tenant_id,
+                    "model_alias": None,
+                    "grill_profile": {},
+                    "knowledge_scope": ["public"],
+                    "usage_limit": {},
+                }
+            return {
+                "tenant_id": tenant_id,
+                "model_alias": settings_record.model_alias,
+                "grill_profile": dict(settings_record.grill_profile or {}),
+                "knowledge_scope": list(settings_record.knowledge_scope or ["public"]),
+                "usage_limit": dict(settings_record.usage_limit or {}),
+            }
+
+    def update_tenant_settings(self, tenant_id: str, values: dict[str, Any]) -> dict[str, Any]:
+        with self.session_factory.begin() as session:
+            if session.get(TenantRecord, tenant_id) is None:
+                raise KeyError("租户不存在")
+            record = session.get(TenantSettingsRecord, tenant_id)
+            now = utc_now()
+            if record is None:
+                record = TenantSettingsRecord(tenant_id=tenant_id, created_at=now, updated_at=now)
+                session.add(record)
+            for key in ("model_alias", "grill_profile", "knowledge_scope", "usage_limit"):
+                if key in values and values[key] is not None:
+                    setattr(record, key, values[key])
+            record.updated_at = now
+            session.flush()
+            return {
+                "tenant_id": tenant_id,
+                "model_alias": record.model_alias,
+                "grill_profile": dict(record.grill_profile or {}),
+                "knowledge_scope": list(record.knowledge_scope or ["public"]),
+                "usage_limit": dict(record.usage_limit or {}),
+            }
 
     def create_user(self, *, user_id: str, username: str, password_hash: str) -> UserRecord:
         with self.session_factory.begin() as session:
@@ -336,7 +718,8 @@ class ConversationStore:
                 raise ValueError("用户名已存在")
             user = UserRecord(id=user_id, username=username, password_hash=password_hash, roles=[])
             session.add(user)
-            return user
+        self.get_or_create_personal_tenant(user_id)
+        return user
 
     def get_user_by_username(self, username: str) -> UserRecord | None:
         with self.session_factory() as session:
@@ -363,25 +746,36 @@ class ConversationStore:
             if token is not None:
                 token.revoked_at = utc_now()
 
-    def get_memory_consent(self, user_id: str) -> bool:
+    def get_memory_consent(self, user_id: str, tenant_id: str | None = None) -> bool:
         """Return explicit consent; absence is always treated as denied."""
 
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory() as session:
-            record = session.get(MemoryConsentRecord, user_id)
+            record = session.get(MemoryConsentRecord, (resolved_tenant_id, user_id))
             return bool(record and record.granted)
 
-    def set_memory_consent(self, user_id: str, granted: bool) -> bool:
+    def set_memory_consent(self, user_id: str, granted: bool, tenant_id: str | None = None) -> bool:
         """Set consent and erase durable memories when consent is withdrawn."""
 
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory.begin() as session:
-            record = session.get(MemoryConsentRecord, user_id)
+            record = session.get(MemoryConsentRecord, (resolved_tenant_id, user_id))
             if record is None:
-                session.add(MemoryConsentRecord(user_id=user_id, granted=bool(granted), updated_at=utc_now()))
+                session.add(
+                    MemoryConsentRecord(
+                        tenant_id=resolved_tenant_id, user_id=user_id, granted=bool(granted), updated_at=utc_now()
+                    )
+                )
             else:
                 record.granted = bool(granted)
                 record.updated_at = utc_now()
             if not granted:
-                session.execute(delete(UserMemoryRecord).where(UserMemoryRecord.user_id == user_id))
+                session.execute(
+                    delete(UserMemoryRecord).where(
+                        UserMemoryRecord.tenant_id == resolved_tenant_id,
+                        UserMemoryRecord.user_id == user_id,
+                    )
+                )
         return bool(granted)
 
     def save_memory(
@@ -391,14 +785,17 @@ class ConversationStore:
         user_input: str,
         assistant_output: str,
         quality: float = 1.0,
+        tenant_id: str | None = None,
     ) -> int | None:
         """Persist one record only after explicit user consent."""
 
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory.begin() as session:
-            consent = session.get(MemoryConsentRecord, user_id)
+            consent = session.get(MemoryConsentRecord, (resolved_tenant_id, user_id))
             if consent is None or not consent.granted:
                 return None
             record = UserMemoryRecord(
+                tenant_id=resolved_tenant_id,
                 user_id=user_id,
                 user_input=user_input,
                 assistant_output=assistant_output,
@@ -409,13 +806,17 @@ class ConversationStore:
             session.flush()
             return record.id
 
-    def list_memory(self, user_id: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    def list_memory(self, user_id: str, *, limit: int = 100, tenant_id: str | None = None) -> list[dict[str, Any]]:
         """Export only records belonging to the requesting user."""
 
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory() as session:
             records = session.scalars(
                 select(UserMemoryRecord)
-                .where(UserMemoryRecord.user_id == user_id)
+                .where(
+                    UserMemoryRecord.tenant_id == resolved_tenant_id,
+                    UserMemoryRecord.user_id == user_id,
+                )
                 .order_by(UserMemoryRecord.created_at.asc(), UserMemoryRecord.id.asc())
                 .limit(max(1, min(limit, 1_000)))
             ).all()
@@ -430,18 +831,34 @@ class ConversationStore:
                 for record in records
             ]
 
-    def export_memory(self, user_id: str) -> dict[str, Any]:
-        return {"user_id": user_id, "consent": self.get_memory_consent(user_id), "items": self.list_memory(user_id)}
+    def export_memory(self, user_id: str, tenant_id: str | None = None) -> dict[str, Any]:
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
+        return {
+            "tenant_id": resolved_tenant_id,
+            "user_id": user_id,
+            "consent": self.get_memory_consent(user_id, resolved_tenant_id),
+            "items": self.list_memory(user_id, tenant_id=resolved_tenant_id),
+        }
 
-    def delete_memory(self, user_id: str, *, revoke_consent: bool = True) -> int:
+    def delete_memory(self, user_id: str, *, revoke_consent: bool = True, tenant_id: str | None = None) -> int:
         """Delete the user's durable memory and optionally revoke consent."""
 
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory.begin() as session:
-            result: Any = session.execute(delete(UserMemoryRecord).where(UserMemoryRecord.user_id == user_id))
+            result: Any = session.execute(
+                delete(UserMemoryRecord).where(
+                    UserMemoryRecord.tenant_id == resolved_tenant_id,
+                    UserMemoryRecord.user_id == user_id,
+                )
+            )
             if revoke_consent:
-                record = session.get(MemoryConsentRecord, user_id)
+                record = session.get(MemoryConsentRecord, (resolved_tenant_id, user_id))
                 if record is None:
-                    session.add(MemoryConsentRecord(user_id=user_id, granted=False, updated_at=utc_now()))
+                    session.add(
+                        MemoryConsentRecord(
+                            tenant_id=resolved_tenant_id, user_id=user_id, granted=False, updated_at=utc_now()
+                        )
+                    )
                 else:
                     record.granted = False
                     record.updated_at = utc_now()
@@ -470,6 +887,7 @@ class ConversationStore:
             for name in profile_fields
         }
         return {
+            "tenant_id": record.tenant_id,
             "user_id": record.user_id,
             "profile": profile,
             "consent_granted": bool(record.consent_granted),
@@ -478,9 +896,10 @@ class ConversationStore:
             "updated_at": _as_utc(record.updated_at).isoformat(),
         }
 
-    def get_user_profile(self, user_id: str) -> dict[str, Any] | None:
+    def get_user_profile(self, user_id: str, tenant_id: str | None = None) -> dict[str, Any] | None:
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory() as session:
-            record = session.get(UserProfileRecord, user_id)
+            record = session.get(UserProfileRecord, (resolved_tenant_id, user_id))
             return self._profile_payload(record) if record is not None else None
 
     def save_user_profile(
@@ -490,6 +909,7 @@ class ConversationStore:
         profile: dict[str, Any],
         consent_granted: bool,
         actor: str | None = None,
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
         profile_fields = (
             "height_cm",
@@ -507,11 +927,14 @@ class ConversationStore:
             "daily_budget",
         )
         list_fields = {"allergies", "dietary_preferences", "disliked_foods", "common_ingredients"}
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory.begin() as session:
-            record = session.get(UserProfileRecord, user_id)
+            record = session.get(UserProfileRecord, (resolved_tenant_id, user_id))
             is_new = record is None
             if record is None:
-                record = UserProfileRecord(user_id=user_id, consent_granted=bool(consent_granted))
+                record = UserProfileRecord(
+                    tenant_id=resolved_tenant_id, user_id=user_id, consent_granted=bool(consent_granted)
+                )
                 session.add(record)
                 changed_fields = [name for name in profile_fields if profile.get(name) not in (None, [], "")]
                 if consent_granted:
@@ -537,6 +960,7 @@ class ConversationStore:
             if changed_fields or is_new:
                 session.add(
                     UserProfileEventRecord(
+                        tenant_id=resolved_tenant_id,
                         user_id=user_id,
                         action="updated",
                         changed_fields=sorted(set(changed_fields)),
@@ -546,8 +970,11 @@ class ConversationStore:
             session.flush()
             return self._profile_payload(record)
 
-    def set_user_profile_consent(self, user_id: str, granted: bool, *, actor: str | None = None) -> dict[str, Any]:
-        current = self.get_user_profile(user_id)
+    def set_user_profile_consent(
+        self, user_id: str, granted: bool, *, actor: str | None = None, tenant_id: str | None = None
+    ) -> dict[str, Any]:
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
+        current = self.get_user_profile(user_id, resolved_tenant_id)
         profile = dict((current or {}).get("profile") or {})
         if not granted:
             profile = {}
@@ -556,16 +983,21 @@ class ConversationStore:
             profile=profile,
             consent_granted=bool(granted),
             actor=actor,
+            tenant_id=resolved_tenant_id,
         )
 
-    def delete_user_profile(self, user_id: str, *, actor: str | None = None) -> dict[str, Any]:
-        return self.set_user_profile_consent(user_id, False, actor=actor)
+    def delete_user_profile(
+        self, user_id: str, *, actor: str | None = None, tenant_id: str | None = None
+    ) -> dict[str, Any]:
+        return self.set_user_profile_consent(user_id, False, actor=actor, tenant_id=tenant_id)
 
-    def export_user_profile(self, user_id: str) -> dict[str, Any]:
-        current = self.get_user_profile(user_id)
+    def export_user_profile(self, user_id: str, tenant_id: str | None = None) -> dict[str, Any]:
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
+        current = self.get_user_profile(user_id, resolved_tenant_id)
         if current is not None:
             return current
         return {
+            "tenant_id": resolved_tenant_id,
             "user_id": user_id,
             "profile": {},
             "consent_granted": False,
@@ -574,12 +1006,14 @@ class ConversationStore:
             "updated_at": None,
         }
 
-    def list_conversations(self, user_id: str) -> list[ConversationRecord]:
+    def list_conversations(self, user_id: str, tenant_id: str | None = None) -> list[ConversationRecord]:
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory() as session:
             return list(
                 session.scalars(
                     select(ConversationRecord)
                     .where(
+                        ConversationRecord.tenant_id == resolved_tenant_id,
                         ConversationRecord.user_id == user_id,
                         ConversationRecord.archived_at.is_(None),
                         ConversationRecord.expires_at > utc_now(),
@@ -588,10 +1022,14 @@ class ConversationStore:
                 ).all()
             )
 
-    def create_conversation(self, *, conversation_id: str, user_id: str, title: str = "新会话") -> ConversationRecord:
+    def create_conversation(
+        self, *, conversation_id: str, user_id: str, title: str = "新会话", tenant_id: str | None = None
+    ) -> ConversationRecord:
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory.begin() as session:
             conversation = ConversationRecord(
                 id=conversation_id,
+                tenant_id=resolved_tenant_id,
                 user_id=user_id,
                 title=title[:200] or "新会话",
                 grill_context={},
@@ -602,11 +1040,13 @@ class ConversationStore:
             session.add(conversation)
             return conversation
 
-    def archive_conversation(self, conversation_id: str, user_id: str) -> None:
+    def archive_conversation(self, conversation_id: str, user_id: str, tenant_id: str | None = None) -> None:
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory.begin() as session:
             conversation = session.scalar(
                 select(ConversationRecord).where(
                     ConversationRecord.id == conversation_id,
+                    ConversationRecord.tenant_id == resolved_tenant_id,
                     ConversationRecord.user_id == user_id,
                 )
             )
@@ -616,12 +1056,14 @@ class ConversationStore:
                 raise KeyError("会话不存在")
             conversation.archived_at = utc_now()
 
-    def delete_conversation(self, conversation_id: str, user_id: str) -> None:
+    def delete_conversation(self, conversation_id: str, user_id: str, tenant_id: str | None = None) -> None:
         """Permanently delete one user-owned conversation and its dependent data."""
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory.begin() as session:
             conversation = session.scalar(
                 select(ConversationRecord).where(
                     ConversationRecord.id == conversation_id,
+                    ConversationRecord.tenant_id == resolved_tenant_id,
                     ConversationRecord.user_id == user_id,
                 )
             )
@@ -636,22 +1078,30 @@ class ConversationStore:
             session.execute(delete(IdempotencyRecord).where(IdempotencyRecord.conversation_id == conversation_id))
             session.delete(conversation)
 
-    def get_idempotent_response(self, conversation_id: str, user_id: str, request_id: str) -> dict[str, Any] | None:
+    def get_idempotent_response(
+        self, conversation_id: str, user_id: str, request_id: str, tenant_id: str | None = None
+    ) -> dict[str, Any] | None:
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory() as session:
             record = session.scalar(
                 select(IdempotencyRecord).where(
                     IdempotencyRecord.conversation_id == conversation_id,
+                    IdempotencyRecord.tenant_id == resolved_tenant_id,
                     IdempotencyRecord.user_id == user_id,
                     IdempotencyRecord.request_id == request_id,
                 )
             )
             return dict(record.response_json) if record is not None else None
 
-    def load(self, conversation_id: str, user_id: str, *, include_metadata: bool = False) -> ConversationSnapshot:
+    def load(
+        self, conversation_id: str, user_id: str, *, include_metadata: bool = False, tenant_id: str | None = None
+    ) -> ConversationSnapshot:
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory() as session:
             conversation = session.scalar(
                 select(ConversationRecord).where(
                     ConversationRecord.id == conversation_id,
+                    ConversationRecord.tenant_id == resolved_tenant_id,
                     ConversationRecord.user_id == user_id,
                     ConversationRecord.expires_at > utc_now(),
                 )
@@ -664,6 +1114,7 @@ class ConversationStore:
                     raise ConversationAccessError("无权访问该会话")
                 conversation = ConversationRecord(
                     id=conversation_id,
+                    tenant_id=resolved_tenant_id,
                     user_id=user_id,
                     title="新会话",
                     grill_context={},
@@ -673,7 +1124,7 @@ class ConversationStore:
                 )
                 session.add(conversation)
                 session.commit()
-                return ConversationSnapshot(conversation_id, user_id, [], {}, None)
+                return ConversationSnapshot(conversation_id, user_id, [], {}, None, tenant_id=resolved_tenant_id)
 
             messages = session.scalars(
                 select(MessageRecord).where(MessageRecord.conversation_id == conversation_id).order_by(MessageRecord.id)
@@ -697,6 +1148,7 @@ class ConversationStore:
                 messages=message_payloads,
                 grill_context=dict(conversation.grill_context or {}),
                 current_goal=conversation.current_goal,
+                tenant_id=resolved_tenant_id,
                 title=conversation.title,
                 version=conversation.version,
                 expires_at=conversation.expires_at,
@@ -716,7 +1168,9 @@ class ConversationStore:
         target_field: str | None,
         response_payload: dict[str, Any] | None = None,
         persist_user_message: bool = True,
+        tenant_id: str | None = None,
     ) -> int:
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         now = utc_now()
         assistant_message_id: int | None = None
         with self.session_factory.begin() as session:
@@ -724,6 +1178,7 @@ class ConversationStore:
                 select(ConversationRecord)
                 .where(
                     ConversationRecord.id == conversation_id,
+                    ConversationRecord.tenant_id == resolved_tenant_id,
                     ConversationRecord.user_id == user_id,
                     ConversationRecord.archived_at.is_(None),
                     ConversationRecord.expires_at > utc_now(),
@@ -738,6 +1193,7 @@ class ConversationStore:
                     raise ConversationAccessError("无权访问该会话")
                 conversation = ConversationRecord(
                     id=conversation_id,
+                    tenant_id=resolved_tenant_id,
                     user_id=user_id,
                     title=user_message[:200] or "新会话",
                     expires_at=conversation_expiry(),
@@ -797,6 +1253,7 @@ class ConversationStore:
                 existing_idempotency = session.scalar(
                     select(IdempotencyRecord).where(
                         IdempotencyRecord.conversation_id == conversation_id,
+                        IdempotencyRecord.tenant_id == resolved_tenant_id,
                         IdempotencyRecord.request_id == request_id,
                     )
                 )
@@ -804,6 +1261,7 @@ class ConversationStore:
                     session.add(
                         IdempotencyRecord(
                             conversation_id=conversation_id,
+                            tenant_id=resolved_tenant_id,
                             user_id=user_id,
                             request_id=request_id,
                             response_json=dict(response_payload),
@@ -820,24 +1278,31 @@ class ConversationStore:
         conversation_id: str,
         request_id: str,
         response_payload: dict[str, Any],
+        tenant_id: str | None = None,
     ) -> None:
+        resolved_tenant_id = tenant_id
         with self.session_factory.begin() as session:
             record = session.scalar(
                 select(IdempotencyRecord).where(
                     IdempotencyRecord.conversation_id == conversation_id,
+                    IdempotencyRecord.tenant_id == resolved_tenant_id,
                     IdempotencyRecord.request_id == request_id,
                 )
             )
             if record is not None:
                 record.response_json = dict(response_payload)
 
-    def latest_user_message(self, conversation_id: str, user_id: str) -> dict[str, Any]:
+    def latest_user_message(
+        self, conversation_id: str, user_id: str, tenant_id: str | None = None
+    ) -> dict[str, Any]:
         """Return the latest user turn after enforcing conversation ownership."""
 
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory() as session:
             conversation = session.scalar(
                 select(ConversationRecord).where(
                     ConversationRecord.id == conversation_id,
+                    ConversationRecord.tenant_id == resolved_tenant_id,
                     ConversationRecord.user_id == user_id,
                     ConversationRecord.expires_at > utc_now(),
                 )
@@ -863,17 +1328,20 @@ class ConversationStore:
         user_id: str,
         rating: str,
         comment: str | None = None,
+        tenant_id: str | None = None,
     ) -> MessageFeedbackRecord:
         """Upsert feedback only for a message owned by the requesting user."""
 
         if rating not in {"up", "down"}:
             raise ValueError("反馈类型必须是 up 或 down")
+        resolved_tenant_id = self._scope_tenant(user_id, tenant_id)
         with self.session_factory.begin() as session:
             message = session.scalar(
                 select(MessageRecord)
                 .join(ConversationRecord, ConversationRecord.id == MessageRecord.conversation_id)
                 .where(
                     MessageRecord.id == message_id,
+                    ConversationRecord.tenant_id == resolved_tenant_id,
                     ConversationRecord.user_id == user_id,
                     MessageRecord.role == "assistant",
                 )
@@ -883,6 +1351,7 @@ class ConversationStore:
             feedback = session.scalar(
                 select(MessageFeedbackRecord).where(
                     MessageFeedbackRecord.message_id == message_id,
+                    MessageFeedbackRecord.tenant_id == resolved_tenant_id,
                     MessageFeedbackRecord.user_id == user_id,
                 )
             )
@@ -890,6 +1359,7 @@ class ConversationStore:
                 feedback = MessageFeedbackRecord(
                     message_id=message_id,
                     conversation_id=message.conversation_id,
+                    tenant_id=resolved_tenant_id,
                     user_id=user_id,
                     rating=rating,
                     comment=comment,

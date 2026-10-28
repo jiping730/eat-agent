@@ -62,6 +62,14 @@ class KnowledgeBaseService:
         self.store = store
         self.index_dir = Path(index_dir or settings.vector_store_path)
 
+    def _index_path(self, tenant_id: str | None) -> Path:
+        """Use one versioned corpus directory per tenant."""
+
+        if not tenant_id:
+            return self.index_dir
+        safe_tenant_id = "".join(char for char in str(tenant_id) if char.isalnum() or char in {"-", "_"})
+        return self.index_dir / "tenants" / safe_tenant_id
+
     @staticmethod
     def validate_source_name(source_name: str) -> str:
         value = Path(str(source_name).strip()).name
@@ -75,6 +83,7 @@ class KnowledgeBaseService:
     def _document_payload(document: KnowledgeDocumentRecord, versions: list[KnowledgeDocumentVersionRecord]) -> dict[str, Any]:
         return {
             "id": document.id,
+            "tenant_id": document.tenant_id,
             "source_name": document.source_name,
             "title": document.title,
             "status": document.status,
@@ -103,6 +112,7 @@ class KnowledgeBaseService:
     def _build_payload(build: KnowledgeBuildRecord) -> dict[str, Any]:
         return {
             "id": build.id,
+            "tenant_id": build.tenant_id,
             "index_version": build.index_version,
             "status": build.status,
             "phase": build.phase,
@@ -123,6 +133,7 @@ class KnowledgeBaseService:
         actor: str,
         title: str | None = None,
         access_groups: Iterable[str] | None = None,
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
         source_name = self.validate_source_name(source_name)
         if not isinstance(content, str) or not content.strip():
@@ -135,12 +146,16 @@ class KnowledgeBaseService:
         normalized_groups = _groups(access_groups)
         with self.store.session_factory.begin() as session:
             document = session.scalar(
-                select(KnowledgeDocumentRecord).where(KnowledgeDocumentRecord.source_name == source_name)
+                select(KnowledgeDocumentRecord).where(
+                    KnowledgeDocumentRecord.source_name == source_name,
+                    KnowledgeDocumentRecord.tenant_id == tenant_id,
+                )
             )
             now = utc_now()
             if document is None:
                 document = KnowledgeDocumentRecord(
                     id=str(uuid.uuid4()),
+                    tenant_id=tenant_id,
                     source_name=source_name,
                     title=normalized_title,
                     status="draft",
@@ -167,6 +182,7 @@ class KnowledgeBaseService:
             session.flush()
             session.add(
                 KnowledgeDocumentVersionRecord(
+                    tenant_id=tenant_id,
                     document_id=document.id,
                     version=version,
                     content=content,
@@ -176,33 +192,55 @@ class KnowledgeBaseService:
                 )
             )
             document_id = document.id
-        return self.get_document(document_id)
+        return self.get_document(document_id, tenant_id)
 
-    def list_documents(self, *, status: str | None = None) -> list[dict[str, Any]]:
+    def list_documents(self, *, status: str | None = None, tenant_id: str | None = None) -> list[dict[str, Any]]:
         if status is not None and status not in _DOCUMENT_STATUSES:
             raise ValueError("文档状态不合法")
         with self.store.session_factory() as session:
             query = select(KnowledgeDocumentRecord).order_by(KnowledgeDocumentRecord.updated_at.desc())
+            query = query.where(KnowledgeDocumentRecord.tenant_id == tenant_id)
             if status:
                 query = query.where(KnowledgeDocumentRecord.status == status)
             documents = session.scalars(query).all()
             return [self._document_payload(document, []) for document in documents]
 
-    def get_document(self, document_id: str) -> dict[str, Any]:
+    def get_document(self, document_id: str, tenant_id: str | None = None) -> dict[str, Any]:
         with self.store.session_factory() as session:
-            document = session.get(KnowledgeDocumentRecord, document_id)
+            document = session.scalar(
+                select(KnowledgeDocumentRecord).where(
+                    KnowledgeDocumentRecord.id == document_id,
+                    KnowledgeDocumentRecord.tenant_id == tenant_id,
+                )
+            )
             if document is None:
                 raise KeyError("知识文档不存在")
             versions = session.scalars(
                 select(KnowledgeDocumentVersionRecord)
-                .where(KnowledgeDocumentVersionRecord.document_id == document_id)
+                .where(
+                    KnowledgeDocumentVersionRecord.document_id == document_id,
+                    KnowledgeDocumentVersionRecord.tenant_id == tenant_id,
+                )
                 .order_by(KnowledgeDocumentVersionRecord.version.desc())
             ).all()
             return self._document_payload(document, list(versions))
 
-    def review_document(self, document_id: str, *, actor: str, approved: bool, note: str | None = None) -> dict[str, Any]:
+    def review_document(
+        self,
+        document_id: str,
+        *,
+        actor: str,
+        approved: bool,
+        note: str | None = None,
+        tenant_id: str | None = None,
+    ) -> dict[str, Any]:
         with self.store.session_factory.begin() as session:
-            document = session.get(KnowledgeDocumentRecord, document_id)
+            document = session.scalar(
+                select(KnowledgeDocumentRecord).where(
+                    KnowledgeDocumentRecord.id == document_id,
+                    KnowledgeDocumentRecord.tenant_id == tenant_id,
+                )
+            )
             if document is None:
                 raise KeyError("知识文档不存在")
             if document.status not in {"draft", "rejected", "approved"}:
@@ -212,12 +250,14 @@ class KnowledgeBaseService:
             document.review_note = (note or "").strip()[:2_000] or None
             document.updated_by = actor
             document.updated_at = utc_now()
-        return self.get_document(document_id)
+        return self.get_document(document_id, tenant_id)
 
-    def _release_entries(self) -> list[dict[str, Any]]:
+    def _release_entries(self, tenant_id: str | None = None) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
         with self.store.session_factory() as session:
-            documents = session.scalars(select(KnowledgeDocumentRecord)).all()
+            documents = session.scalars(
+                select(KnowledgeDocumentRecord).where(KnowledgeDocumentRecord.tenant_id == tenant_id)
+            ).all()
             for document in documents:
                 if document.status == "unpublished":
                     continue
@@ -252,7 +292,7 @@ class KnowledgeBaseService:
                 setattr(build, key, value)
             return self._build_payload(build)
 
-    def build_index(self, *, actor: str) -> dict[str, Any]:
+    def build_index(self, *, actor: str, tenant_id: str | None = None) -> dict[str, Any]:
         """Build and publish one complete corpus synchronously with progress."""
 
         with self._build_lock:
@@ -262,6 +302,7 @@ class KnowledgeBaseService:
                 session.add(
                     KnowledgeBuildRecord(
                         id=build_id,
+                        tenant_id=tenant_id,
                         index_version=index_version,
                         status="building",
                         phase="preparing",
@@ -271,7 +312,7 @@ class KnowledgeBaseService:
                     )
                 )
             try:
-                entries = self._release_entries()
+                entries = self._release_entries(tenant_id)
                 self._set_build(
                     build_id,
                     phase="collecting",
@@ -279,7 +320,7 @@ class KnowledgeBaseService:
                     document_count=len(entries),
                 )
                 manifest = ingest_document_entries(
-                    self.index_dir,
+                    self._index_path(tenant_id),
                     entries,
                     version=index_version,
                     publish=False,
@@ -291,10 +332,13 @@ class KnowledgeBaseService:
                     document_count=int(manifest.get("document_count", len(entries))),
                     chunk_count=int(manifest.get("chunk_count", 0)),
                 )
-                publish_version(self.index_dir, index_version)
+                publish_version(self._index_path(tenant_id), index_version)
                 with self.store.session_factory.begin() as session:
                     approved = session.scalars(
-                        select(KnowledgeDocumentRecord).where(KnowledgeDocumentRecord.status == "approved")
+                        select(KnowledgeDocumentRecord).where(
+                            KnowledgeDocumentRecord.status == "approved",
+                            KnowledgeDocumentRecord.tenant_id == tenant_id,
+                        )
                     ).all()
                     for document in approved:
                         document.status = "published"
@@ -306,7 +350,7 @@ class KnowledgeBaseService:
                         build.phase = "completed"
                         build.progress = 100
                         build.finished_at = utc_now()
-                return self.get_build(build_id)
+                return self.get_build(build_id, tenant_id)
             except Exception as exc:
                 self._set_build(
                     build_id,
@@ -318,32 +362,43 @@ class KnowledgeBaseService:
                 )
                 raise
 
-    def get_build(self, build_id: str) -> dict[str, Any]:
+    def get_build(self, build_id: str, tenant_id: str | None = None) -> dict[str, Any]:
         with self.store.session_factory() as session:
-            build = session.get(KnowledgeBuildRecord, build_id)
+            build = session.scalar(
+                select(KnowledgeBuildRecord).where(
+                    KnowledgeBuildRecord.id == build_id,
+                    KnowledgeBuildRecord.tenant_id == tenant_id,
+                )
+            )
             if build is None:
                 raise KeyError("索引构建任务不存在")
             return self._build_payload(build)
 
-    def list_builds(self, *, limit: int = 20) -> list[dict[str, Any]]:
+    def list_builds(self, *, limit: int = 20, tenant_id: str | None = None) -> list[dict[str, Any]]:
         with self.store.session_factory() as session:
             builds = session.scalars(
                 select(KnowledgeBuildRecord)
+                .where(KnowledgeBuildRecord.tenant_id == tenant_id)
                 .order_by(KnowledgeBuildRecord.started_at.desc())
                 .limit(max(1, min(limit, 100)))
             ).all()
             return [self._build_payload(build) for build in builds]
 
-    def publish_document(self, document_id: str, *, actor: str) -> dict[str, Any]:
-        document = self.get_document(document_id)
+    def publish_document(self, document_id: str, *, actor: str, tenant_id: str | None = None) -> dict[str, Any]:
+        document = self.get_document(document_id, tenant_id)
         if document["status"] != "approved":
             raise ValueError("文档必须审核通过后才能发布")
-        build = self.build_index(actor=actor)
-        return {"document": self.get_document(document_id), "build": build}
+        build = self.build_index(actor=actor, tenant_id=tenant_id)
+        return {"document": self.get_document(document_id, tenant_id), "build": build}
 
-    def unpublish_document(self, document_id: str, *, actor: str) -> dict[str, Any]:
+    def unpublish_document(self, document_id: str, *, actor: str, tenant_id: str | None = None) -> dict[str, Any]:
         with self.store.session_factory.begin() as session:
-            document = session.get(KnowledgeDocumentRecord, document_id)
+            document = session.scalar(
+                select(KnowledgeDocumentRecord).where(
+                    KnowledgeDocumentRecord.id == document_id,
+                    KnowledgeDocumentRecord.tenant_id == tenant_id,
+                )
+            )
             if document is None:
                 raise KeyError("知识文档不存在")
             if document.status != "published":
@@ -352,34 +407,55 @@ class KnowledgeBaseService:
             document.updated_by = actor
             document.updated_at = utc_now()
         try:
-            build = self.build_index(actor=actor)
+            build = self.build_index(actor=actor, tenant_id=tenant_id)
         except Exception:
             with self.store.session_factory.begin() as session:
-                document = session.get(KnowledgeDocumentRecord, document_id)
+                document = session.scalar(
+                    select(KnowledgeDocumentRecord).where(
+                        KnowledgeDocumentRecord.id == document_id,
+                        KnowledgeDocumentRecord.tenant_id == tenant_id,
+                    )
+                )
                 if document is not None:
                     document.status = "published"
                     document.updated_by = actor
                     document.updated_at = utc_now()
             raise
-        return {"document": self.get_document(document_id), "build": build}
+        return {"document": self.get_document(document_id, tenant_id), "build": build}
 
-    def rollback(self, target: str, *, actor: str) -> dict[str, Any]:
+    def rollback(self, target: str, *, actor: str, tenant_id: str | None = None) -> dict[str, Any]:
         with self.store.session_factory() as session:
-            build = session.get(KnowledgeBuildRecord, target)
+            build = session.scalar(
+                select(KnowledgeBuildRecord).where(
+                    KnowledgeBuildRecord.id == target,
+                    KnowledgeBuildRecord.tenant_id == tenant_id,
+                )
+            )
             if build is None:
-                build = session.scalar(select(KnowledgeBuildRecord).where(KnowledgeBuildRecord.index_version == target))
+                build = session.scalar(
+                    select(KnowledgeBuildRecord).where(
+                        KnowledgeBuildRecord.index_version == target,
+                        KnowledgeBuildRecord.tenant_id == tenant_id,
+                    )
+                )
             if build is None or build.status == "failed":
                 raise KeyError("可回滚的索引版本不存在")
             index_version = build.index_version
-        rollback_version(self.index_dir, index_version)
+        rollback_version(self._index_path(tenant_id), index_version)
         with self.store.session_factory.begin() as session:
-            builds = session.scalars(select(KnowledgeBuildRecord)).all()
+            builds = session.scalars(
+                select(KnowledgeBuildRecord).where(KnowledgeBuildRecord.tenant_id == tenant_id)
+            ).all()
             for item in builds:
                 if item.status == "published":
                     item.status = "rolled_back"
                 if item.index_version == index_version:
                     item.status = "published"
-        return {"active_version": active_version(self.index_dir), "rolled_back_to": index_version, "actor": actor}
+        return {
+            "active_version": active_version(self._index_path(tenant_id)),
+            "rolled_back_to": index_version,
+            "actor": actor,
+        }
 
     def retrieval_test(
         self,
@@ -388,6 +464,7 @@ class KnowledgeBaseService:
         actor: str,
         top_k: int = 4,
         access_groups: Iterable[str] | None = None,
+        tenant_id: str | None = None,
     ) -> dict[str, Any]:
         if not query.strip():
             raise ValueError("检索问题不能为空")
@@ -396,12 +473,13 @@ class KnowledgeBaseService:
             query,
             top_k=max(1, min(top_k, 10)),
             access_groups=set(groups),
-            index_dir=str(self.index_dir),
+            index_dir=str(self._index_path(tenant_id)),
         )
         document_ids = [source.document_id for source in response.sources if source.document_id]
         with self.store.session_factory.begin() as session:
             session.add(
                 KnowledgeRetrievalEventRecord(
+                    tenant_id=tenant_id,
                     query=query[:2_000],
                     access_groups=groups,
                     result_count=len(response.documents),
@@ -411,16 +489,19 @@ class KnowledgeBaseService:
                 )
             )
         return {
-            "active_version": active_version(self.index_dir),
+            "active_version": active_version(self._index_path(tenant_id)),
             "status": response.status,
             "documents": [item.model_dump() for item in response.documents],
             "sources": [item.model_dump() for item in response.sources],
         }
 
-    def analytics(self) -> dict[str, Any]:
+    def analytics(self, tenant_id: str | None = None) -> dict[str, Any]:
         with self.store.session_factory() as session:
             events = session.scalars(
-                select(KnowledgeRetrievalEventRecord).order_by(KnowledgeRetrievalEventRecord.created_at.desc()).limit(10_000)
+                select(KnowledgeRetrievalEventRecord)
+                .where(KnowledgeRetrievalEventRecord.tenant_id == tenant_id)
+                .order_by(KnowledgeRetrievalEventRecord.created_at.desc())
+                .limit(10_000)
             ).all()
         total = len(events)
         hits = sum(1 for event in events if event.result_count > 0)
@@ -428,7 +509,7 @@ class KnowledgeBaseService:
         for event in events:
             source_counter.update(str(item) for item in (event.result_document_ids or []))
         return {
-            "active_version": active_version(self.index_dir),
+            "active_version": active_version(self._index_path(tenant_id)),
             "total_queries": total,
             "hit_queries": hits,
             "hit_rate": round(hits / total, 4) if total else 0.0,

@@ -5,7 +5,7 @@ from langgraph.graph import END, StateGraph
 
 from config import settings
 from core.graph_rag import GraphRAGEngine
-from core.grill_engine import GrillContext, GrillEngine, field_label, get_profile
+from core.grill_engine import GrillContext, GrillEngine, TaskProfile, field_label, get_profile
 from core.intent_router import RequestIntent, classify_request_with_model
 from core.logging_config import configure_logging, log_event
 from core.memory import MemoryManager
@@ -20,6 +20,8 @@ from utils.llm import get_llm
 class AgentState(TypedDict):
     messages: Annotated[List[Dict[str, str]], operator.add]  # 对话历史
     user_id: str  # 用户标识
+    tenant_id: str  # 当前租户
+    tenant_settings: Dict[str, Any]  # 当前租户的轻量配置
     memory_context: List[str]  # 记忆检索结果
     user_profile: Dict[str, Any]  # Explicit, consented personal profile
     current_goal: str  # 当前目标
@@ -160,7 +162,12 @@ def create_workflow(
                 state["memory_context"] = []
             else:
                 query = state["messages"][-1]["content"]
-                memories = memory_mgr.retrieve_relevant_memories(query, user_id=state["user_id"])
+                try:
+                    memories = memory_mgr.retrieve_relevant_memories(
+                        query, user_id=state["user_id"], tenant_id=state.get("tenant_id")
+                    )
+                except TypeError:
+                    memories = memory_mgr.retrieve_relevant_memories(query, user_id=state["user_id"])
                 state["memory_context"] = memories
                 log_event(logger, 20, "memory_retrieved", result_count=len(memories))
         except StreamCancelled:
@@ -228,6 +235,12 @@ def create_workflow(
                 state["grill_context"] = persisted_context
 
             profile = get_profile(intent)
+            tenant_profiles = (state.get("tenant_settings", {}) or {}).get("grill_profile", {})
+            override = tenant_profiles.get(intent) if isinstance(tenant_profiles, dict) else None
+            if profile is not None and isinstance(override, dict):
+                profile_payload = profile.model_dump(mode="json")
+                profile_payload.update(override)
+                profile = TaskProfile.model_validate(profile_payload)
             if profile is None:
                 state["grill_result"] = {
                     "action": "execute",
@@ -450,6 +463,10 @@ def create_workflow(
             execution_context["conversation_id"] = state.get("conversation_id")
             execution_context["trace_id"] = state.get("trace_id")
             execution_context["user_id"] = state.get("user_id")
+            execution_context["tenant_id"] = state.get("tenant_id")
+            execution_context["access_groups"] = (
+                (state.get("tenant_settings", {}) or {}).get("knowledge_scope") or ["public"]
+            )
             if isinstance(execution_context.get("fields"), dict):
                 # MCP tool schemas describe top-level arguments; local tools
                 # continue to consume the same fields nested under context.
@@ -642,6 +659,7 @@ def create_workflow(
                 "grill_context": state.get("grill_context", {}),
                 "request_intent": request_intent,
                 "graph_rag": graph_rag_content,
+                "tenant_settings": state.get("tenant_settings", {}),
             }
             prompt = f"""请根据以下对话历史和相关上下文回答用户当前问题。
 
@@ -660,7 +678,13 @@ def create_workflow(
 如果上下文没有可靠来源，不要编造具体营养数值；涉及过敏原时必须先提醒用户核对配料表。"""
 
         try:
-            llm = get_llm(task="answer", user_id=state.get("user_id"))
+            tenant_settings = state.get("tenant_settings", {}) or {}
+            preferred_model = tenant_settings.get("model_alias") if isinstance(tenant_settings, dict) else None
+            llm = get_llm(
+                task="answer",
+                user_id=state.get("user_id"),
+                preferred_model=preferred_model or None,
+            )
             with start_span("llm.generate", {"intent": state.get("current_goal")}):
                 if state.get("stream_emit") is None:
                     answer = llm.invoke(prompt)
@@ -713,7 +737,16 @@ def create_workflow(
         try:
             last_user_msg = state["messages"][-2]["content"]
             last_assistant_msg = state["messages"][-1]["content"]
-            memory_mgr.save_meta(last_user_msg, last_assistant_msg, 1.0, user_id=state.get("user_id"))
+            try:
+                memory_mgr.save_meta(
+                    last_user_msg,
+                    last_assistant_msg,
+                    1.0,
+                    user_id=state.get("user_id"),
+                    tenant_id=state.get("tenant_id"),
+                )
+            except TypeError:
+                memory_mgr.save_meta(last_user_msg, last_assistant_msg, 1.0, user_id=state.get("user_id"))
         except Exception as e:
             log_event(logger, 40, "memory_reflection_failed", error_type=type(e).__name__)
         return state
