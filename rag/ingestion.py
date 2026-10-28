@@ -71,29 +71,19 @@ def _normalize_access_groups(access_groups: Iterable[str] | None) -> list[str]:
     return sorted(groups or {"public"})
 
 
-def build_documents(
-    source_dir: str | os.PathLike[str],
-    version: str = "legacy",
-    *,
-    access_groups: Iterable[str] | None = None,
-) -> list[Document]:
-    """Read text documents and return cleaned, deduplicated chunks."""
+def _build_documents_from_entries(entries: Iterable[dict[str, Any]], version: str) -> list[Document]:
+    """Build deterministic chunks from managed text entries."""
 
-    root = Path(source_dir)
-    if not root.exists():
-        return []
     seen_chunks: set[str] = set()
-    normalized_access_groups = _normalize_access_groups(access_groups)
     documents: list[Document] = []
-    for path in sorted(root.rglob("*.txt")):
-        if not path.is_file():
-            continue
-        text = clean_text(path.read_text(encoding="utf-8"))
+    for entry in entries:
+        text = clean_text(str(entry.get("content") or ""))
         if not text:
             continue
-        relative_path = path.relative_to(root).as_posix()
-        document_id = _hash(relative_path)
+        relative_path = str(entry.get("source") or entry.get("source_name") or "managed.txt").replace("\\", "/")
+        document_id = str(entry.get("document_id") or _hash(relative_path))
         content_hash = _hash(text)
+        normalized_access_groups = _normalize_access_groups(entry.get("access_groups"))
         for index, chunk in enumerate(split_text(text)):
             dedupe_key = _dedupe_key(chunk)
             if not dedupe_key or dedupe_key in seen_chunks:
@@ -105,7 +95,7 @@ def build_documents(
                     metadata={
                         "type": "knowledge_base",
                         "source": relative_path,
-                        "title": path.stem,
+                        "title": str(entry.get("title") or Path(relative_path).stem),
                         "document_id": document_id,
                         "version": version,
                         "chunk_id": f"{document_id}:{index}",
@@ -115,6 +105,33 @@ def build_documents(
                 )
             )
     return documents
+
+
+def build_documents(
+    source_dir: str | os.PathLike[str],
+    version: str = "legacy",
+    *,
+    access_groups: Iterable[str] | None = None,
+) -> list[Document]:
+    """Read text documents and return cleaned, deduplicated chunks."""
+
+    root = Path(source_dir)
+    if not root.exists():
+        return []
+    entries: list[dict[str, Any]] = []
+    paths = sorted({path for pattern in ("*.txt", "*.md") for path in root.rglob(pattern)})
+    for path in paths:
+        if not path.is_file():
+            continue
+        entries.append(
+            {
+                "content": path.read_text(encoding="utf-8"),
+                "source": path.relative_to(root).as_posix(),
+                "title": path.stem,
+                "access_groups": access_groups,
+            }
+        )
+    return _build_documents_from_entries(entries, version)
 
 
 def _write_json_atomic(path: Path, payload: Any) -> None:
@@ -176,16 +193,31 @@ def ingest_documents(
         raise FileExistsError(f"知识库版本已存在：{resolved_version}")
 
     documents = build_documents(source_dir, resolved_version, access_groups=access_groups)
-    manifest = _manifest(resolved_version, str(source_dir), documents)
+    return _ingest_built_documents(root, resolved_version, str(source_dir), documents, publish=publish)
+
+
+def _ingest_built_documents(
+    index_dir: Path,
+    version: str,
+    source_dir: str,
+    documents: Iterable[Document],
+    *,
+    publish: bool,
+) -> dict[str, Any]:
+    """Persist a prepared corpus using the same atomic writer as file ingestion."""
+
+    documents = list(documents)
+    manifest = _manifest(version, str(source_dir), documents)
     corpus = {
-        "version": resolved_version,
+        "version": version,
         "documents": [{"page_content": document.page_content, "metadata": document.metadata} for document in documents],
     }
-    temporary_dir = Path(tempfile.mkdtemp(prefix=f".{resolved_version}.", dir=versions_dir))
+    versions_dir = index_dir / "versions"
+    temporary_dir = Path(tempfile.mkdtemp(prefix=f".{version}.", dir=versions_dir))
     try:
-        _write_json_atomic(temporary_dir / "manifest.json", manifest)
+        _write_json_atomic(temporary_dir / "manifest.json", {**manifest, "version": version})
         _write_json_atomic(temporary_dir / "corpus.json", corpus)
-        os.replace(temporary_dir, version_dir)
+        os.replace(temporary_dir, versions_dir / version)
     except BaseException:
         if temporary_dir.exists():
             for child in temporary_dir.iterdir():
@@ -193,8 +225,28 @@ def ingest_documents(
             temporary_dir.rmdir()
         raise
     if publish:
-        publish_version(root, resolved_version)
+        publish_version(index_dir, version)
     return manifest
+
+
+def ingest_document_entries(
+    index_dir: str | os.PathLike[str],
+    entries: Iterable[dict[str, Any]],
+    *,
+    version: str | None = None,
+    publish: bool = True,
+) -> dict[str, Any]:
+    """Build a version from reviewed managed-document content."""
+
+    resolved_version = _version(version)
+    root = Path(index_dir)
+    versions_dir = root / "versions"
+    versions_dir.mkdir(parents=True, exist_ok=True)
+    version_dir = versions_dir / resolved_version
+    if version_dir.exists():
+        raise FileExistsError(f"知识库版本已存在：{resolved_version}")
+    documents = _build_documents_from_entries(entries, resolved_version)
+    return _ingest_built_documents(root, resolved_version, "managed", documents, publish=publish)
 
 
 def rollback_version(index_dir: str | os.PathLike[str], version: str) -> None:

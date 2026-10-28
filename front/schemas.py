@@ -102,3 +102,33 @@ class AskResponse(BaseModel):
     grill: dict[str, Any] = Field(default_factory=dict)
     safety: dict[str, Any] = Field(default_factory=dict)
     sources: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class KnowledgeDocumentUploadRequest(BaseModel):
+    source_name: str = Field(min_length=1, max_length=256)
+    content: str = Field(min_length=1)
+    title: str | None = Field(default=None, max_length=200)
+    access_groups: list[str] = Field(default_factory=lambda: ["public"], max_length=20)
+
+
+class KnowledgeReviewRequest(BaseModel):
+    approved: bool
+    note: str | None = Field(default=None, max_length=2_000)
+
+
+class KnowledgeDocumentListResponse(BaseModel):
+    items: list[dict[str, Any]]
+
+
+class KnowledgeBuildRequest(BaseModel):
+    confirm: bool = True
+
+
+class KnowledgeRollbackRequest(BaseModel):
+    target: str = Field(min_length=1, max_length=128)
+
+
+class KnowledgeRetrievalTestRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=2_000)
+    top_k: int = Field(default=4, ge=1, le=10)
+    access_groups: list[str] = Field(default_factory=lambda: ["public"], max_length=20)

@@ -64,11 +64,13 @@ def upgrade() -> None:
     op.create_index("ix_idempotency_records_conversation_id", "idempotency_records", ["conversation_id"], unique=False)
     op.create_index("ix_idempotency_records_user_id", "idempotency_records", ["user_id"], unique=False)
 
-    op.create_unique_constraint("uq_messages_request_role", "messages", ["conversation_id", "request_id", "role"])
+    with op.batch_alter_table("messages") as batch_op:
+        batch_op.create_unique_constraint("uq_messages_request_role", ["conversation_id", "request_id", "role"])
 
 
 def downgrade() -> None:
-    op.drop_constraint("uq_messages_request_role", "messages", type_="unique")
+    with op.batch_alter_table("messages") as batch_op:
+        batch_op.drop_constraint("uq_messages_request_role", type_="unique")
     op.drop_index("ix_idempotency_records_user_id", table_name="idempotency_records")
     op.drop_index("ix_idempotency_records_conversation_id", table_name="idempotency_records")
     op.drop_table("idempotency_records")

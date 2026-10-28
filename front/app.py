@@ -24,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import settings
 from core.auth import AuthenticationError, AuthPrincipal, AuthService, hash_refresh_token
 from core.conversation_runtime import ConversationRuntime
+from core.knowledge_base import KnowledgeBaseService
 from core.logging_config import configure_logging, fingerprint, log_event
 from core.observability import (
     bind_observation_context,
@@ -47,6 +48,12 @@ from front.schemas import (
     LogoutRequest,
     MemoryConsentRequest,
     MessageFeedbackRequest,
+    KnowledgeBuildRequest,
+    KnowledgeDocumentListResponse,
+    KnowledgeDocumentUploadRequest,
+    KnowledgeRetrievalTestRequest,
+    KnowledgeReviewRequest,
+    KnowledgeRollbackRequest,
     RefreshRequest,
     TokenResponse,
     UserResponse,
@@ -72,6 +79,7 @@ if startup_errors:
     raise RuntimeError("生产安全配置无效: " + "; ".join(startup_errors))
 configure_optional_observability()
 runtime = ConversationRuntime()
+knowledge_service = KnowledgeBaseService(runtime.store)
 auth_service = AuthService()
 rate_limiter = SlidingWindowRateLimiter(settings.rate_limit_per_minute, redis_url=settings.redis_url)
 set_app_info(settings.app_version, settings.app_env)
@@ -89,6 +97,7 @@ PUBLIC_PATHS = {
     "/docs",
     "/redoc",
     "/openapi.json",
+    "/admin/knowledge",
 }
 
 
@@ -119,6 +128,25 @@ def _platform_user_id(request: Request, data: dict | None = None) -> str:
     if not isinstance(requested_user_id, str) or not requested_user_id.strip():
         raise ValueError("缺少用户身份")
     return requested_user_id.strip()
+
+
+def _knowledge_admin(request: Request) -> str:
+    """Return the verified actor for knowledge administration endpoints."""
+
+    principal: AuthPrincipal | None = getattr(request.state, "principal", None)
+    configured_ids = {
+        value.strip() for value in settings.knowledge_admin_user_ids.split(",") if value.strip()
+    }
+    if principal is not None:
+        if principal.user_id in configured_ids or set(principal.roles).intersection(
+            {"admin", "knowledge_admin", "service"}
+        ):
+            return principal.user_id
+        raise PermissionError("当前用户没有知识库管理权限")
+    header_user_id = request.headers.get("X-User-ID", "").strip()
+    if header_user_id and header_user_id in configured_ids:
+        return header_user_id
+    raise PermissionError("需要知识库管理员身份")
 
 
 def _token_response(user, token_pair) -> dict:
@@ -253,6 +281,11 @@ def index(request: Request):
     return templates.TemplateResponse(request=request, name="index.html", context={})
 
 
+@app.get("/admin/knowledge", include_in_schema=False)
+def knowledge_admin_page(request: Request):
+    return templates.TemplateResponse(request=request, name="knowledge.html", context={})
+
+
 @app.get("/health/live", include_in_schema=False)
 @app.get("/healthz", include_in_schema=False)
 def health_live():
@@ -384,6 +417,86 @@ def delete_memory(request: Request):
     deleted = runtime.memory_mgr.delete_user_memory(user_id, revoke_consent=True)
     log_event(logger, 20, "memory_deleted", user=fingerprint(user_id), record_count=deleted)
     return {"status": "deleted", "deleted_count": deleted, "consent": False}
+
+
+@app.get("/admin/knowledge/documents", response_model=KnowledgeDocumentListResponse)
+def list_knowledge_documents(request: Request, status: str | None = None):
+    _knowledge_admin(request)
+    return {"items": knowledge_service.list_documents(status=status)}
+
+
+@app.post("/admin/knowledge/documents", status_code=201)
+def upload_knowledge_document(data: KnowledgeDocumentUploadRequest, request: Request):
+    actor = _knowledge_admin(request)
+    return knowledge_service.upload_document(
+        source_name=data.source_name,
+        content=data.content,
+        title=data.title,
+        access_groups=data.access_groups,
+        actor=actor,
+    )
+
+
+@app.get("/admin/knowledge/documents/{document_id}")
+def knowledge_document_detail(document_id: str, request: Request):
+    _knowledge_admin(request)
+    return knowledge_service.get_document(document_id)
+
+
+@app.post("/admin/knowledge/documents/{document_id}/review")
+def review_knowledge_document(document_id: str, data: KnowledgeReviewRequest, request: Request):
+    actor = _knowledge_admin(request)
+    return knowledge_service.review_document(document_id, actor=actor, approved=data.approved, note=data.note)
+
+
+@app.post("/admin/knowledge/documents/{document_id}/publish")
+def publish_knowledge_document(document_id: str, request: Request):
+    return knowledge_service.publish_document(document_id, actor=_knowledge_admin(request))
+
+
+@app.post("/admin/knowledge/documents/{document_id}/unpublish")
+def unpublish_knowledge_document(document_id: str, request: Request):
+    return knowledge_service.unpublish_document(document_id, actor=_knowledge_admin(request))
+
+
+@app.post("/admin/knowledge/index/build")
+def build_knowledge_index(data: KnowledgeBuildRequest, request: Request):
+    if not data.confirm:
+        raise ValueError("必须确认构建索引")
+    return knowledge_service.build_index(actor=_knowledge_admin(request))
+
+
+@app.get("/admin/knowledge/index/builds")
+def list_knowledge_builds(request: Request, limit: int = 20):
+    _knowledge_admin(request)
+    return {"items": knowledge_service.list_builds(limit=limit)}
+
+
+@app.get("/admin/knowledge/index/builds/{build_id}")
+def knowledge_build_detail(build_id: str, request: Request):
+    _knowledge_admin(request)
+    return knowledge_service.get_build(build_id)
+
+
+@app.post("/admin/knowledge/index/rollback")
+def rollback_knowledge_index(data: KnowledgeRollbackRequest, request: Request):
+    return knowledge_service.rollback(data.target, actor=_knowledge_admin(request))
+
+
+@app.post("/admin/knowledge/retrieval/test")
+def test_knowledge_retrieval(data: KnowledgeRetrievalTestRequest, request: Request):
+    return knowledge_service.retrieval_test(
+        data.query,
+        actor=_knowledge_admin(request),
+        top_k=data.top_k,
+        access_groups=data.access_groups,
+    )
+
+
+@app.get("/admin/knowledge/analytics")
+def knowledge_analytics(request: Request):
+    _knowledge_admin(request)
+    return knowledge_service.analytics()
 
 
 @app.get("/conversations", response_model=ConversationListResponse)

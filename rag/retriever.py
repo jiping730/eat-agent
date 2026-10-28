@@ -227,11 +227,15 @@ def get_retriever_with_score(
     *,
     top_k: int = 4,
     access_groups: set[str] | None = None,
+    source_dir: str | None = None,
+    index_dir: str | None = None,
 ):
     """Return a retriever that records hit rate, latency, and result count."""
 
     logger = configure_logging()
     retriever = HybridRetriever(
+        source_dir=source_dir,
+        index_dir=index_dir,
         score_threshold=score_threshold,
         top_k=top_k,
         access_groups=access_groups,
@@ -277,6 +281,8 @@ def retrieve_with_contract(
     score_threshold: float = 2.0,
     top_k: int = 4,
     access_groups: set[str] | None = None,
+    source_dir: str | None = None,
+    index_dir: str | None = None,
 ) -> RetrievalResponse:
     """Return the P1 contract while retaining the legacy text adapter."""
 
@@ -284,6 +290,8 @@ def retrieve_with_contract(
         score_threshold=score_threshold,
         top_k=top_k,
         access_groups=access_groups,
+        source_dir=source_dir,
+        index_dir=index_dir,
     )(query)
     retrieved: list[RetrievedDocument] = []
     sources: list[SourceRef] = []

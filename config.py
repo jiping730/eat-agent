@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     jwt_access_ttl_minutes: int = 30
     jwt_refresh_ttl_days: int = 30
     conversation_ttl_days: int = 30
+    knowledge_admin_user_ids: str = ""
+    knowledge_max_document_bytes: int = 1_048_576
     redis_url: Optional[str] = None
     redis_lock_timeout_seconds: int = 30
     strict_security: bool = False

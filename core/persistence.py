@@ -177,6 +177,78 @@ class UserMemoryRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
+class KnowledgeDocumentRecord(Base):
+    """A managed knowledge document and its current lifecycle state."""
+
+    __tablename__ = "knowledge_documents"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    source_name: Mapped[str] = mapped_column(String(256), unique=True, index=True, nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), index=True, nullable=False, default="draft")
+    latest_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    published_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    access_groups: Mapped[list[str]] = mapped_column(JSON, default=lambda: ["public"], nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    updated_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    reviewed_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    review_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+
+class KnowledgeDocumentVersionRecord(Base):
+    """Immutable text snapshot for one managed document version."""
+
+    __tablename__ = "knowledge_document_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    document_id: Mapped[str] = mapped_column(
+        ForeignKey("knowledge_documents.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    __table_args__ = (UniqueConstraint("document_id", "version", name="uq_knowledge_document_version"),)
+
+
+class KnowledgeBuildRecord(Base):
+    """Durable progress and outcome for a knowledge index build."""
+
+    __tablename__ = "knowledge_builds"
+
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    index_version: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), index=True, nullable=False, default="building")
+    phase: Mapped[str] = mapped_column(String(64), nullable=False, default="preparing")
+    progress: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    document_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    initiated_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class KnowledgeRetrievalEventRecord(Base):
+    """Minimal, content-safe retrieval analytics event."""
+
+    __tablename__ = "knowledge_retrieval_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    query: Mapped[str] = mapped_column(String(2_000), nullable=False)
+    access_groups: Mapped[list[str]] = mapped_column(JSON, default=lambda: ["public"], nullable=False)
+    result_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    result_document_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    initiated_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
 @dataclass(frozen=True)
 class ConversationSnapshot:
     conversation_id: str

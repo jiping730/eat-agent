@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>知识库管理 · 轻松食</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="knowledge-page">
+    <main class="knowledge-container">
+        <header class="knowledge-header">
+            <div>
+                <p class="eyebrow">P1-6 · 小型平台管理后台</p>
+                <h1>知识库管理</h1>
+                <p>上传、审核、发布和验证营养知识内容。</p>
+            </div>
+            <a class="back-link" href="/">返回对话</a>
+        </header>
+
+        <section class="knowledge-card auth-card">
+            <h2>管理凭据</h2>
+            <p>使用登录后的管理员身份，或输入配置好的服务 API Key。</p>
+            <label>服务 API Key <input id="knowledgeApiKey" type="password" placeholder="可选"></label>
+            <button id="saveKnowledgeAuth" type="button">保存凭据</button>
+            <span id="knowledgeStatus" class="knowledge-status"></span>
+        </section>
+
+        <section class="knowledge-card">
+            <div class="section-heading">
+                <div>
+                    <h2>上传文档</h2>
+                    <p>当前支持 UTF-8 编码的 .txt / .md 文件，上传后默认进入草稿状态。</p>
+                </div>
+                <input id="knowledgeFile" type="file" accept=".txt,.md,text/plain,text/markdown">
+            </div>
+            <div class="form-grid">
+                <label>标题 <input id="knowledgeTitle" type="text" maxlength="200" placeholder="默认使用文件名"></label>
+                <label>访问组 <input id="knowledgeGroups" type="text" value="public" placeholder="逗号分隔"></label>
+            </div>
+            <textarea id="knowledgeContent" rows="8" placeholder="也可以直接粘贴文档内容"></textarea>
+            <button id="uploadKnowledge" type="button">上传为草稿</button>
+        </section>
+
+        <section class="knowledge-card">
+            <div class="section-heading">
+                <div>
+                    <h2>文档审核与发布</h2>
+                    <p id="knowledgeSummary">正在加载…</p>
+                </div>
+                <button id="refreshKnowledge" type="button">刷新</button>
+            </div>
+            <div id="knowledgeDocuments" class="knowledge-table-wrap"></div>
+        </section>
+
+        <section class="knowledge-card split-card">
+            <div>
+                <div class="section-heading">
+                    <div>
+                        <h2>索引发布</h2>
+                        <p>审核通过的文档会进入下一次原子索引发布。</p>
+                    </div>
+                    <button id="buildKnowledge" type="button">构建并发布索引</button>
+                </div>
+                <div id="knowledgeBuilds" class="build-list"></div>
+                <div class="rollback-row">
+                    <select id="rollbackTarget"><option value="">选择历史版本</option></select>
+                    <button id="rollbackKnowledge" type="button">回滚</button>
+                </div>
+            </div>
+            <div>
+                <h2>检索测试</h2>
+                <p>查看真实索引命中的来源和证据片段。</p>
+                <textarea id="retrievalQuery" rows="4" placeholder="例如：鸡胸肉的蛋白质来源"></textarea>
+                <button id="testRetrieval" type="button">测试检索</button>
+                <pre id="retrievalResult" class="retrieval-result"></pre>
+            </div>
+        </section>
+
+        <section class="knowledge-card analytics-card">
+            <div class="section-heading">
+                <div>
+                    <h2>命中分析</h2>
+                    <p>仅记录查询摘要和命中文档 ID，不保存完整回答内容。</p>
+                </div>
+                <button id="refreshAnalytics" type="button">刷新分析</button>
+            </div>
+            <pre id="knowledgeAnalytics" class="analytics-result"></pre>
+        </section>
+    </main>
+    <script src="/static/knowledge.js?v=1.0.0"></script>
+</body>
+</html>
