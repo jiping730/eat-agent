@@ -11,7 +11,18 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, create_engine, delete, select
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+    delete,
+    select,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 from config import settings
@@ -55,7 +66,9 @@ class UserRecord(Base):
     roles: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
 
 
 class RefreshTokenRecord(Base):
@@ -81,7 +94,9 @@ class ConversationRecord(Base):
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=conversation_expiry)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
 
 
 class MessageRecord(Base):
@@ -98,9 +113,26 @@ class MessageRecord(Base):
     target_field: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
-    __table_args__ = (
-        UniqueConstraint("conversation_id", "request_id", "role", name="uq_messages_request_role"),
+    __table_args__ = (UniqueConstraint("conversation_id", "request_id", "role", name="uq_messages_request_role"),)
+
+
+class MessageFeedbackRecord(Base):
+    __tablename__ = "message_feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_id: Mapped[int] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"), index=True, nullable=False)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True, nullable=False
     )
+    user_id: Mapped[str] = mapped_column(String(128), index=True, nullable=False)
+    rating: Mapped[str] = mapped_column(String(16), nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False
+    )
+
+    __table_args__ = (UniqueConstraint("message_id", "user_id", name="uq_message_feedback_user"),)
 
 
 class IdempotencyRecord(Base):
@@ -115,16 +147,14 @@ class IdempotencyRecord(Base):
     response_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
-    __table_args__ = (
-        UniqueConstraint("conversation_id", "request_id", name="uq_idempotency_conversation_request"),
-    )
+    __table_args__ = (UniqueConstraint("conversation_id", "request_id", name="uq_idempotency_conversation_request"),)
 
 
 @dataclass(frozen=True)
 class ConversationSnapshot:
     conversation_id: str
     user_id: str
-    messages: list[dict[str, str]]
+    messages: list[dict[str, Any]]
     grill_context: dict[str, Any]
     current_goal: str | None
     title: str = "新会话"
@@ -249,6 +279,9 @@ class ConversationStore:
                 if session.get(ConversationRecord, conversation_id) is not None:
                     raise ConversationAccessError("无权访问该会话")
                 raise KeyError("会话不存在")
+            session.execute(
+                delete(MessageFeedbackRecord).where(MessageFeedbackRecord.conversation_id == conversation_id)
+            )
             session.execute(delete(MessageRecord).where(MessageRecord.conversation_id == conversation_id))
             session.execute(delete(IdempotencyRecord).where(IdempotencyRecord.conversation_id == conversation_id))
             session.delete(conversation)
@@ -264,7 +297,7 @@ class ConversationStore:
             )
             return dict(record.response_json) if record is not None else None
 
-    def load(self, conversation_id: str, user_id: str) -> ConversationSnapshot:
+    def load(self, conversation_id: str, user_id: str, *, include_metadata: bool = False) -> ConversationSnapshot:
         with self.session_factory() as session:
             conversation = session.scalar(
                 select(ConversationRecord).where(
@@ -293,14 +326,25 @@ class ConversationStore:
                 return ConversationSnapshot(conversation_id, user_id, [], {}, None)
 
             messages = session.scalars(
-                select(MessageRecord)
-                .where(MessageRecord.conversation_id == conversation_id)
-                .order_by(MessageRecord.id)
+                select(MessageRecord).where(MessageRecord.conversation_id == conversation_id).order_by(MessageRecord.id)
             ).all()
+            message_payloads: list[dict[str, Any]] = []
+            for item in messages:
+                payload: dict[str, Any] = {"role": item.role, "content": item.content}
+                if include_metadata:
+                    payload.update(
+                        {
+                            "id": item.id,
+                            "request_id": item.request_id,
+                            "response_type": item.response_type,
+                            "target_field": item.target_field,
+                        }
+                    )
+                message_payloads.append(payload)
             return ConversationSnapshot(
                 conversation_id=conversation_id,
                 user_id=user_id,
-                messages=[{"role": item.role, "content": item.content} for item in messages],
+                messages=message_payloads,
                 grill_context=dict(conversation.grill_context or {}),
                 current_goal=conversation.current_goal,
                 title=conversation.title,
@@ -321,16 +365,20 @@ class ConversationStore:
         response_type: str,
         target_field: str | None,
         response_payload: dict[str, Any] | None = None,
-    ) -> None:
+        persist_user_message: bool = True,
+    ) -> int:
         now = utc_now()
+        assistant_message_id: int | None = None
         with self.session_factory.begin() as session:
             conversation = session.scalar(
-                select(ConversationRecord).where(
+                select(ConversationRecord)
+                .where(
                     ConversationRecord.id == conversation_id,
                     ConversationRecord.user_id == user_id,
                     ConversationRecord.archived_at.is_(None),
                     ConversationRecord.expires_at > utc_now(),
-                ).with_for_update()
+                )
+                .with_for_update()
             )
             if conversation is None:
                 existing = session.get(ConversationRecord, conversation_id)
@@ -353,23 +401,24 @@ class ConversationStore:
             conversation.updated_at = now
             conversation.version += 1
 
-            existing_user = session.scalar(
-                select(MessageRecord).where(
-                    MessageRecord.conversation_id == conversation_id,
-                    MessageRecord.request_id == request_id,
-                    MessageRecord.role == "user",
-                )
-            )
-            if existing_user is None:
-                session.add(
-                    MessageRecord(
-                        conversation_id=conversation_id,
-                        request_id=request_id,
-                        role="user",
-                        content=user_message,
-                        created_at=now,
+            if persist_user_message:
+                existing_user = session.scalar(
+                    select(MessageRecord).where(
+                        MessageRecord.conversation_id == conversation_id,
+                        MessageRecord.request_id == request_id,
+                        MessageRecord.role == "user",
                     )
                 )
+                if existing_user is None:
+                    session.add(
+                        MessageRecord(
+                            conversation_id=conversation_id,
+                            request_id=request_id,
+                            role="user",
+                            content=user_message,
+                            created_at=now,
+                        )
+                    )
 
             existing_assistant = session.scalar(
                 select(MessageRecord).where(
@@ -379,17 +428,20 @@ class ConversationStore:
                 )
             )
             if existing_assistant is None:
-                session.add(
-                    MessageRecord(
-                        conversation_id=conversation_id,
-                        request_id=request_id,
-                        role="assistant",
-                        content=assistant_message,
-                        response_type=response_type,
-                        target_field=target_field,
-                        created_at=now,
-                    )
+                assistant = MessageRecord(
+                    conversation_id=conversation_id,
+                    request_id=request_id,
+                    role="assistant",
+                    content=assistant_message,
+                    response_type=response_type,
+                    target_field=target_field,
+                    created_at=now,
                 )
+                session.add(assistant)
+                session.flush()
+                assistant_message_id = assistant.id
+            else:
+                assistant_message_id = existing_assistant.id
 
             if response_payload is not None:
                 existing_idempotency = session.scalar(
@@ -408,3 +460,94 @@ class ConversationStore:
                             created_at=now,
                         )
                     )
+        if assistant_message_id is None:
+            raise RuntimeError("assistant message was not persisted")
+        return assistant_message_id
+
+    def update_idempotent_response(
+        self,
+        *,
+        conversation_id: str,
+        request_id: str,
+        response_payload: dict[str, Any],
+    ) -> None:
+        with self.session_factory.begin() as session:
+            record = session.scalar(
+                select(IdempotencyRecord).where(
+                    IdempotencyRecord.conversation_id == conversation_id,
+                    IdempotencyRecord.request_id == request_id,
+                )
+            )
+            if record is not None:
+                record.response_json = dict(response_payload)
+
+    def latest_user_message(self, conversation_id: str, user_id: str) -> dict[str, Any]:
+        """Return the latest user turn after enforcing conversation ownership."""
+
+        with self.session_factory() as session:
+            conversation = session.scalar(
+                select(ConversationRecord).where(
+                    ConversationRecord.id == conversation_id,
+                    ConversationRecord.user_id == user_id,
+                    ConversationRecord.expires_at > utc_now(),
+                )
+            )
+            if conversation is None:
+                existing = session.get(ConversationRecord, conversation_id)
+                if existing is not None:
+                    raise ConversationAccessError("无权访问该会话")
+                raise KeyError("会话不存在")
+            message = session.scalar(
+                select(MessageRecord)
+                .where(MessageRecord.conversation_id == conversation_id, MessageRecord.role == "user")
+                .order_by(MessageRecord.id.desc())
+            )
+            if message is None:
+                raise KeyError("没有可重新生成的用户消息")
+            return {"id": message.id, "request_id": message.request_id, "content": message.content}
+
+    def save_feedback(
+        self,
+        *,
+        message_id: int,
+        user_id: str,
+        rating: str,
+        comment: str | None = None,
+    ) -> MessageFeedbackRecord:
+        """Upsert feedback only for a message owned by the requesting user."""
+
+        if rating not in {"up", "down"}:
+            raise ValueError("反馈类型必须是 up 或 down")
+        with self.session_factory.begin() as session:
+            message = session.scalar(
+                select(MessageRecord)
+                .join(ConversationRecord, ConversationRecord.id == MessageRecord.conversation_id)
+                .where(
+                    MessageRecord.id == message_id,
+                    ConversationRecord.user_id == user_id,
+                    MessageRecord.role == "assistant",
+                )
+            )
+            if message is None:
+                raise KeyError("消息不存在")
+            feedback = session.scalar(
+                select(MessageFeedbackRecord).where(
+                    MessageFeedbackRecord.message_id == message_id,
+                    MessageFeedbackRecord.user_id == user_id,
+                )
+            )
+            if feedback is None:
+                feedback = MessageFeedbackRecord(
+                    message_id=message_id,
+                    conversation_id=message.conversation_id,
+                    user_id=user_id,
+                    rating=rating,
+                    comment=comment,
+                )
+                session.add(feedback)
+            else:
+                feedback.rating = rating
+                feedback.comment = comment
+                feedback.updated_at = utc_now()
+            session.flush()
+            return feedback

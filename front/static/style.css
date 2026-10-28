@@ -165,6 +165,47 @@ body {
     border-bottom-left-radius: 4px;
 }
 
+.message-content-wrapper {
+    min-width: 0;
+}
+
+.stream-status {
+    margin-top: 6px;
+    color: #6c757d;
+    font-size: 0.78rem;
+}
+
+.message-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.message-actions button {
+    border: 1px solid #cfe6d4;
+    border-radius: 12px;
+    background: #f6fbf7;
+    color: #39754a;
+    cursor: pointer;
+    font-size: 0.72rem;
+    padding: 4px 8px;
+}
+
+.message-actions button:hover {
+    background: #e5f4e8;
+}
+
+.message-actions button:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+
+.message-actions[data-feedback='up'] button:first-child,
+.message-actions[data-feedback='down'] button:nth-child(2) {
+    background: #d4edda;
+}
+
 .stats {
     font-size: 0.7rem;
     color: #6c757d;

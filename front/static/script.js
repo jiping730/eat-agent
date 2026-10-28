@@ -14,16 +14,17 @@ let accessToken = localStorage.getItem('accessToken');
 let refreshToken = localStorage.getItem('refreshToken');
 let userId = localStorage.getItem('userId');
 let conversationId = localStorage.getItem('conversationId');
+let activeStreamController = null;
 
-function addMessage(text, isUser, stats = null, options = []) {
+function addMessage(text, isUser, stats = null, options = [], metadata = {}) {
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${isUser ? 'user-message' : 'bot-message'}`;
+    if (metadata.id) messageDiv.dataset.messageId = String(metadata.id);
     const avatar = document.createElement('div');
     avatar.className = 'avatar';
     avatar.textContent = isUser ? '👤' : '🤖';
     const contentWrapper = document.createElement('div');
-    contentWrapper.style.display = 'flex';
-    contentWrapper.style.flexDirection = 'column';
+    contentWrapper.className = 'message-content-wrapper';
     const content = document.createElement('div');
     content.className = 'content';
     content.textContent = text;
@@ -57,10 +58,38 @@ function addMessage(text, isUser, stats = null, options = []) {
         contentWrapper.appendChild(optionsDiv);
     }
 
+    if (!isUser && (metadata.id || metadata.allowActions)) {
+        appendMessageActions(contentWrapper, metadata.id, metadata.allowActions !== false);
+    }
+
     messageDiv.appendChild(avatar);
     messageDiv.appendChild(contentWrapper);
     chatMessages.appendChild(messageDiv);
     chatMessages.scrollTop = chatMessages.scrollHeight;
+    return { messageDiv, content, contentWrapper };
+}
+
+function appendMessageActions(wrapper, messageId, allowRegenerate = true) {
+    const actions = document.createElement('div');
+    actions.className = 'message-actions';
+    const up = document.createElement('button');
+    up.type = 'button';
+    up.textContent = '有帮助';
+    up.addEventListener('click', () => submitFeedback(messageId, 'up', actions));
+    const down = document.createElement('button');
+    down.type = 'button';
+    down.textContent = '需改进';
+    down.addEventListener('click', () => submitFeedback(messageId, 'down', actions));
+    actions.appendChild(up);
+    actions.appendChild(down);
+    if (allowRegenerate) {
+        const regenerate = document.createElement('button');
+        regenerate.type = 'button';
+        regenerate.textContent = '重新生成';
+        regenerate.addEventListener('click', regenerateAnswer);
+        actions.appendChild(regenerate);
+    }
+    wrapper.appendChild(actions);
 }
 
 function resetChat() {
@@ -155,6 +184,7 @@ async function authenticate(path) {
 }
 
 async function loadConversations() {
+    if (!accessToken && !userId) return;
     const response = await apiFetch('/conversations');
     if (!response.ok) return;
     const data = await response.json();
@@ -178,7 +208,17 @@ async function openConversation(id) {
     if (!response.ok) return;
     const data = await response.json();
     resetChat();
-    (data.messages || []).forEach((message) => addMessage(message.content, message.role === 'user'));
+    (data.messages || []).forEach((message) => addMessage(
+        message.content,
+        message.role === 'user',
+        message.role === 'assistant' && message.response_type ? {
+            time: '-',
+            retrieval: '-',
+            type: message.response_type,
+        } : null,
+        [],
+        { id: message.id, allowActions: message.role === 'assistant' },
+    ));
 }
 
 async function createConversation() {
@@ -197,7 +237,88 @@ async function createConversation() {
     await loadConversations();
 }
 
+function stageLabel(stage) {
+    const labels = {
+        understanding: '正在理解你的问题…',
+        answer: '正在整理回答…',
+        memory: '正在读取相关上下文…',
+    };
+    return labels[stage] || '正在处理…';
+}
+
+function createStreamingMessage() {
+    const result = addMessage('', false, null, [], { allowActions: false });
+    const status = document.createElement('div');
+    status.className = 'stream-status';
+    status.textContent = '正在理解你的问题…';
+    result.contentWrapper.appendChild(status);
+    result.status = status;
+    return result;
+}
+
+function updateStreamStatus(result, text) {
+    if (!result) return;
+    result.status.textContent = text;
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function finalizeStreamingMessage(result, response) {
+    if (!result || !response) return;
+    result.content.textContent = response.answer || result.content.textContent;
+    result.status.className = `response-status ${response.type || 'answer'}`;
+    result.status.textContent = response.type === 'clarification' ? '需要补充信息' : '已完成回答';
+    const stats = document.createElement('div');
+    stats.className = 'stats';
+    stats.textContent = `响应时间: ${response.response_time ?? '-'}s  检索次数: ${response.retrieval_count ?? '-'}`;
+    result.contentWrapper.appendChild(stats);
+    if (response.type === 'clarification' && (response.options || []).length) {
+        const optionsDiv = document.createElement('div');
+        optionsDiv.className = 'clarification-options';
+        (response.options || []).forEach((option) => {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'option-button';
+            button.textContent = option.label || option.value;
+            button.addEventListener('click', () => sendQuestion(String(option.label ?? option.value ?? '')));
+            optionsDiv.appendChild(button);
+        });
+        result.contentWrapper.appendChild(optionsDiv);
+    }
+    appendMessageActions(result.contentWrapper, response.message_id, true);
+}
+
+function parseSseBuffer(buffer) {
+    const frames = buffer.split('\n\n');
+    return { frames: frames.slice(0, -1), remainder: frames[frames.length - 1] };
+}
+
+async function consumeSse(response, onEvent) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parsed = parseSseBuffer(buffer);
+        buffer = parsed.remainder;
+        for (const frame of parsed.frames) {
+            const dataLine = frame.split('\n').find((line) => line.startsWith('data: '));
+            if (!dataLine) continue;
+            try {
+                await onEvent(JSON.parse(dataLine.slice(6)));
+            } catch (error) {
+                console.error('无法解析 SSE 事件', error, frame);
+            }
+        }
+    }
+}
+
 async function sendQuestion(questionOverride = null) {
+    if (activeStreamController) {
+        activeStreamController.abort();
+        return;
+    }
     const question = (questionOverride ?? questionInput.value).trim();
     if (!question) return;
     if (!userId) {
@@ -211,33 +332,88 @@ async function sendQuestion(questionOverride = null) {
 
     addMessage(question, true);
     questionInput.value = '';
-    sendBtn.disabled = true;
-    showTyping();
+    sendBtn.disabled = false;
+    sendBtn.textContent = '停止';
+    const controller = new AbortController();
+    activeStreamController = controller;
+    const result = createStreamingMessage();
+    let finalResponse = null;
     try {
-        const response = await apiFetch('/ask', {
+        const response = await apiFetch('/ask/stream', {
             method: 'POST',
             body: JSON.stringify({ question, user_id: userId, conversation_id: conversationId }),
+            signal: controller.signal,
         });
-        const data = await response.json();
-        hideTyping();
-        if (response.ok) {
-            addMessage(
-                data.answer,
-                false,
-                { time: data.response_time, retrieval: data.retrieval_count, type: data.type },
-                data.type === 'clarification' ? (data.options || []) : [],
-            );
-            await loadConversations();
-        } else {
-            addMessage(`出错了：${data.error || '未知错误'}`, false);
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error || '请求失败');
         }
+        await consumeSse(response, async (event) => {
+            const data = event.data || {};
+            if (event.event === 'model.started') updateStreamStatus(result, stageLabel(data.stage));
+            if (event.event === 'retrieval.started') updateStreamStatus(result, '正在检索相关资料…');
+            if (event.event === 'retrieval.completed') updateStreamStatus(result, '已完成资料检索，正在整理…');
+            if (event.event === 'tool.started') updateStreamStatus(result, `正在调用 ${data.tool || '工具'}…`);
+            if (event.event === 'tool.completed') updateStreamStatus(result, '工具处理完成，正在生成回答…');
+            if (event.event === 'grill.clarify') updateStreamStatus(result, '正在确认还需要哪些信息…');
+            if (event.event === 'model.delta' && data.delta) {
+                result.content.textContent += data.delta;
+                updateStreamStatus(result, '正在生成回答…');
+            }
+            if (event.event === 'answer.completed') finalResponse = data;
+            if (event.event === 'error') {
+                if (data.code === 'cancelled') updateStreamStatus(result, '已停止生成');
+                else throw new Error(data.message || '回答生成失败');
+            }
+        });
+        if (finalResponse) finalizeStreamingMessage(result, finalResponse);
+        else if (!result.content.textContent) updateStreamStatus(result, '回答未完成，请重试');
+        await loadConversations();
     } catch (error) {
-        hideTyping();
-        addMessage('网络错误，请稍后重试。', false);
-        console.error(error);
+        if (error.name === 'AbortError') {
+            updateStreamStatus(result, '已停止生成');
+        } else {
+            result.content.textContent = `出错了：${error.message || '网络错误'}`;
+            updateStreamStatus(result, '请求失败');
+            console.error(error);
+        }
     } finally {
+        activeStreamController = null;
+        sendBtn.textContent = '发送';
         sendBtn.disabled = false;
         questionInput.focus();
+    }
+}
+
+async function regenerateAnswer() {
+    if (!conversationId || activeStreamController) return;
+    const response = await apiFetch(`/conversations/${encodeURIComponent(conversationId)}/regenerate`, { method: 'POST' });
+    const data = await response.json();
+    if (!response.ok) {
+        addMessage(`重新生成失败：${data.error || '未知错误'}`, false);
+        return;
+    }
+    addMessage(data.answer, false, {
+        time: data.response_time,
+        retrieval: data.retrieval_count,
+        type: data.type,
+    }, data.type === 'clarification' ? (data.options || []) : [], { id: data.message_id, allowActions: true });
+    await loadConversations();
+}
+
+async function submitFeedback(messageId, rating, actions) {
+    if (!messageId) {
+        actions.dataset.feedback = rating;
+        actions.querySelectorAll('button').forEach((button) => { button.disabled = true; });
+        return;
+    }
+    const response = await apiFetch(`/messages/${encodeURIComponent(messageId)}/feedback`, {
+        method: 'POST',
+        body: JSON.stringify({ rating }),
+    });
+    if (response.ok) {
+        actions.dataset.feedback = rating;
+        actions.querySelectorAll('button').forEach((button) => { button.disabled = true; });
     }
 }
 

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
@@ -45,11 +45,11 @@ from front.schemas import (
     CredentialsRequest,
     ErrorResponse,
     LogoutRequest,
+    MessageFeedbackRequest,
     RefreshRequest,
     TokenResponse,
     UserResponse,
 )
-
 
 ROOT_DIR = Path(__file__).resolve().parent
 app = FastAPI(title="轻松食 · 智能营养助手", version=settings.app_version)
@@ -99,7 +99,9 @@ def _trace_id(request: Request) -> str:
     return getattr(request.state, "trace_id", "")
 
 
-def _error_response(request: Request, message: str, status_code: int, error_code: str = "request_error") -> JSONResponse:
+def _error_response(
+    request: Request, message: str, status_code: int, error_code: str = "request_error"
+) -> JSONResponse:
     payload = ErrorResponse(error=message, error_code=error_code, request_id=_request_id(request))
     return JSONResponse(status_code=status_code, content=payload.model_dump())
 
@@ -130,6 +132,8 @@ def _stable_path(path: str) -> str:
         return "/conversations/:id"
     if path.startswith("/static/"):
         return "/static/:asset"
+    if path.startswith("/messages/"):
+        return "/messages/:id"
     return path
 
 
@@ -150,7 +154,7 @@ def _metrics_auth_error(request: Request) -> JSONResponse | None:
 
 
 async def _call_with_rate_limit(request: Request, call_next):
-    if request.url.path == "/ask":
+    if request.url.path in {"/ask", "/ask/stream"}:
         client_key = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown")
         client_key = client_key.split(",")[0].strip()
         if not rate_limiter.allow(client_key):
@@ -381,7 +385,7 @@ def create_conversation(data: ConversationCreateRequest, request: Request):
 @app.get("/conversations/{conversation_id}", response_model=ConversationDetailResponse)
 def conversation_detail(conversation_id: str, request: Request):
     user_id = _platform_user_id(request)
-    snapshot = runtime.store.load(conversation_id, user_id)
+    snapshot = runtime.store.load(conversation_id, user_id, include_metadata=True)
     return {
         "id": snapshot.conversation_id,
         "title": snapshot.title,
@@ -414,6 +418,50 @@ def ask(data: AskRequest, request: Request):
         trace_id=_trace_id(request),
     )
     return response.to_dict()
+
+
+@app.post("/ask/stream")
+def ask_stream(data: AskRequest, request: Request):
+    payload = data.model_dump()
+    user_id = _platform_user_id(request, payload)
+    stream = runtime.ask_stream(
+        data.question,
+        user_id=user_id,
+        conversation_id=data.conversation_id,
+        request_id=_request_id(request),
+        trace_id=_trace_id(request),
+    )
+    return StreamingResponse(
+        stream,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/conversations/{conversation_id}/regenerate", response_model=AskResponse)
+def regenerate(conversation_id: str, request: Request):
+    response = runtime.regenerate(
+        user_id=_platform_user_id(request),
+        conversation_id=conversation_id,
+        request_id=_request_id(request),
+        trace_id=_trace_id(request),
+    )
+    return response.to_dict()
+
+
+@app.post("/messages/{message_id}/feedback")
+def message_feedback(message_id: int, data: MessageFeedbackRequest, request: Request):
+    feedback = runtime.store.save_feedback(
+        message_id=message_id,
+        user_id=_platform_user_id(request),
+        rating=data.rating,
+        comment=data.comment,
+    )
+    return {"status": "saved", "id": feedback.id, "message_id": feedback.message_id, "rating": feedback.rating}
 
 
 if __name__ == "__main__":

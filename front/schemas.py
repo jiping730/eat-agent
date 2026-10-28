@@ -56,8 +56,12 @@ class ConversationListResponse(BaseModel):
 
 
 class ConversationMessage(BaseModel):
+    id: int | None = None
     role: Literal["user", "assistant"]
     content: str
+    request_id: str | None = None
+    response_type: str | None = None
+    target_field: str | None = None
 
 
 class ConversationDetailResponse(BaseModel):
@@ -72,6 +76,11 @@ class AskRequest(BaseModel):
     conversation_id: str | None = Field(default=None, max_length=128)
     # 仅在开发/API-Key 兼容模式使用；JWT 模式由 Token 身份决定。
     user_id: str | None = Field(default=None, max_length=128)
+
+
+class MessageFeedbackRequest(BaseModel):
+    rating: Literal["up", "down"]
+    comment: str | None = Field(default=None, max_length=2_000)
 
 
 class AskResponse(BaseModel):

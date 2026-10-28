@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, List, Literal, Optional
@@ -23,6 +23,7 @@ from core.observability import (
     record_model_route,
     start_span,
 )
+from core.streaming import StreamCancelled
 
 try:
     from litellm import completion as litellm_completion
@@ -184,7 +185,7 @@ class InMemoryBudgetStore:
     @staticmethod
     def _key(user_id: str) -> tuple[str, str]:
         day = datetime.now(timezone.utc).date().isoformat()
-        return fingerprint(user_id or "anonymous"), day
+        return fingerprint(user_id or "anonymous") or "anonymous", day
 
     def reserve(self, user_id: str, tokens: int, cost: float) -> _BudgetReservation:
         key = self._key(user_id)
@@ -328,6 +329,21 @@ class ModelGateway:
         first = choices[0]
         message = first.get("message") if isinstance(first, Mapping) else getattr(first, "message", None)
         content = message.get("content") if isinstance(message, Mapping) else getattr(message, "content", "")
+        if isinstance(content, list):
+            return "".join(
+                str(item.get("text", "")) if isinstance(item, Mapping) else str(getattr(item, "text", ""))
+                for item in content
+            )
+        return str(content or "")
+
+    @staticmethod
+    def _delta_content(response: Any) -> str:
+        choices = response.get("choices") if isinstance(response, Mapping) else getattr(response, "choices", None)
+        if not choices:
+            return ""
+        first = choices[0]
+        delta = first.get("delta") if isinstance(first, Mapping) else getattr(first, "delta", None)
+        content = delta.get("content") if isinstance(delta, Mapping) else getattr(delta, "content", "")
         if isinstance(content, list):
             return "".join(
                 str(item.get("text", "")) if isinstance(item, Mapping) else str(getattr(item, "text", ""))
@@ -480,6 +496,162 @@ class ModelGateway:
             raise last_error
         raise ModelGatewayError("所有模型路由均不可用") from last_error
 
+    def stream(
+        self,
+        prompt: str,
+        request: ModelRouteRequest | None = None,
+        *,
+        task: str = "answer",
+        user_id: str | None = None,
+        cancel_event: Any | None = None,
+    ) -> Iterator[str]:
+        """Yield provider deltas while preserving P1-2 routing and budget rules.
+
+        A fallback is attempted only before the first delta is emitted. Once a
+        client has received content, switching models would produce a duplicate
+        or contradictory answer, so the interrupted stream fails safely.
+        """
+
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("prompt 不能为空")
+        resolved_request = request or self.build_request(task)
+        max_tokens = min(resolved_request.max_tokens, settings.llm_max_tokens)
+        timeout_seconds = min(resolved_request.timeout_seconds, settings.llm_timeout_seconds)
+        candidates = self._candidates(resolved_request)
+        completion = self._completion()
+        last_error: Exception | None = None
+        resolved_user_id = user_id or "anonymous"
+
+        for candidate in candidates:
+            for attempt in range(1, settings.llm_max_attempts + 1):
+                reservation: _BudgetReservation | None = None
+                started_at = time.perf_counter()
+                emitted = False
+                input_tokens: int | None = None
+                output_tokens: int | None = None
+                try:
+                    if cancel_event is not None and cancel_event.is_set():
+                        raise StreamCancelled("stream cancelled by client")
+                    reservation = self._reservation(resolved_user_id, prompt, max_tokens)
+                    call_kwargs = self._provider_kwargs(candidate.provider, candidate.model)
+                    call_kwargs.update(
+                        {
+                            "messages": [{"role": "user", "content": prompt}],
+                            "temperature": resolved_request.temperature,
+                            "max_tokens": max_tokens,
+                            "timeout": timeout_seconds,
+                            "stream": True,
+                        }
+                    )
+                    with start_span(
+                        "llm.gateway.stream",
+                        {
+                            "llm.provider": candidate.provider,
+                            "llm.model": candidate.model,
+                            "llm.task": resolved_request.task,
+                            "llm.route": candidate.route,
+                            "llm.attempt": attempt,
+                        },
+                    ):
+                        response = completion(**call_kwargs)
+                        for chunk in response:
+                            if cancel_event is not None and cancel_event.is_set():
+                                raise StreamCancelled("stream cancelled by client")
+                            chunk_input, chunk_output = _response_usage(chunk)
+                            input_tokens = chunk_input if chunk_input is not None else input_tokens
+                            output_tokens = chunk_output if chunk_output is not None else output_tokens
+                            delta = self._delta_content(chunk)
+                            if delta:
+                                emitted = True
+                                yield delta
+                    if not emitted:
+                        raise ModelGatewayError("模型流式返回为空")
+                    usage = ModelUsage(input_tokens=input_tokens, output_tokens=output_tokens)
+                    cost = _estimate_cost(input_tokens, output_tokens)
+                    self.budget_store.settle(
+                        reservation,
+                        usage.total_tokens or reservation.tokens,
+                        cost if cost is not None else reservation.cost,
+                    )
+                    elapsed = time.perf_counter() - started_at
+                    fallback_used = candidate.route == "fallback"
+                    record_model_route(resolved_request.task, candidate.provider, candidate.model, candidate.route)
+                    record_llm_call(
+                        "success",
+                        elapsed,
+                        model=candidate.model,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cost=cost,
+                    )
+                    log_event(
+                        self.logger,
+                        20,
+                        "llm_gateway_stream_completed",
+                        task=resolved_request.task,
+                        provider=candidate.provider,
+                        model=candidate.model,
+                        route=candidate.route,
+                        attempt=attempt,
+                        fallback_used=fallback_used,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cost=cost,
+                        duration_ms=round(elapsed * 1000, 2),
+                    )
+                    record_langfuse_trace(
+                        "llm.gateway.stream",
+                        metadata={
+                            "task": resolved_request.task,
+                            "provider": candidate.provider,
+                            "model": candidate.model,
+                            "route": candidate.route,
+                            "fallback_used": fallback_used,
+                            "input_tokens": input_tokens,
+                            "output_tokens": output_tokens,
+                            "cost": cost,
+                        },
+                    )
+                    return
+                except StreamCancelled:
+                    if reservation is not None:
+                        self.budget_store.release(reservation)
+                    record_llm_call("cancelled", time.perf_counter() - started_at, model=candidate.model)
+                    raise
+                except ModelBudgetExceeded:
+                    raise
+                except Exception as exc:
+                    if reservation is not None:
+                        self.budget_store.release(reservation)
+                    last_error = exc
+                    elapsed = time.perf_counter() - started_at
+                    record_model_route(resolved_request.task, candidate.provider, candidate.model, candidate.route)
+                    record_llm_call("failure", elapsed, model=candidate.model)
+                    log_event(
+                        self.logger,
+                        30,
+                        "llm_gateway_stream_failed",
+                        task=resolved_request.task,
+                        provider=candidate.provider,
+                        model=candidate.model,
+                        route=candidate.route,
+                        attempt=attempt,
+                        emitted=emitted,
+                        error_type=type(exc).__name__,
+                        duration_ms=round(elapsed * 1000, 2),
+                    )
+                    if emitted:
+                        raise ModelGatewayError("流式模型调用中断") from exc
+                    if attempt < settings.llm_max_attempts:
+                        delay = max(0.0, settings.llm_retry_base_delay_ms / 1000) * (2 ** (attempt - 1))
+                        if delay:
+                            self.sleep_fn(delay)
+
+        record_fallback("llm_gateway_stream_unavailable")
+        if isinstance(last_error, ModelUnavailable):
+            raise last_error
+        raise ModelGatewayError("所有模型流式路由均不可用") from last_error
+
 
 class GatewayLLM:
     """Minimal LangChain-compatible adapter used by the existing Workflow."""
@@ -491,6 +663,9 @@ class GatewayLLM:
 
     def invoke(self, prompt: str) -> str:
         return self.gateway.complete(prompt, task=self.task, user_id=self.user_id).content
+
+    def stream(self, prompt: str, *, cancel_event: Any | None = None) -> Iterator[str]:
+        return self.gateway.stream(prompt, task=self.task, user_id=self.user_id, cancel_event=cancel_event)
 
 
 _DEFAULT_GATEWAY = ModelGateway()

@@ -1,15 +1,16 @@
 import operator
-from typing import Annotated, Any, Dict, List, TypedDict
+from typing import Annotated, Any, Callable, Dict, List, NotRequired, TypedDict
 
 from langgraph.graph import END, StateGraph
 
 from config import settings
 from core.graph_rag import GraphRAGEngine
 from core.grill_engine import GrillContext, GrillEngine, field_label, get_profile
-from core.intent_router import classify_request_with_model
+from core.intent_router import RequestIntent, classify_request_with_model
 from core.logging_config import configure_logging, log_event
 from core.memory import MemoryManager
 from core.observability import record_fallback, start_span
+from core.streaming import StreamCancelled
 from core.tool_registry import ToolRegistry, ToolResult, build_default_tool_registry, tool_error_message
 from utils.llm import get_llm
 
@@ -35,6 +36,9 @@ class AgentState(TypedDict):
     conversation_id: str
     trace_id: str
     tool_failures: List[Dict[str, Any]]
+    stream_emit: NotRequired[Callable[..., Any]]
+    cancel_event: NotRequired[Any]
+    regenerate: NotRequired[bool]
 
 
 def create_workflow(
@@ -61,14 +65,30 @@ def create_workflow(
             log_event(logger, 30, "workflow_component_disabled", component="graphrag", error_type=type(e).__name__)
             graph_rag = None
 
+    def emit_event(state: AgentState, event: str, data: dict[str, Any] | None = None) -> None:
+        cancel_event = state.get("cancel_event")
+        if cancel_event is not None and cancel_event.is_set():
+            raise StreamCancelled("stream cancelled by client")
+        callback = state.get("stream_emit")
+        if callback is not None:
+            callback(event, data or {})
+
     # 定义节点函数
     def understand_intent(state: AgentState) -> AgentState:
         last_msg = state["messages"][-1]["content"]
-        request = classify_request_with_model(
-            last_msg,
-            state.get("grill_context", {}) or {},
-            user_id=state.get("user_id"),
-        )
+        emit_event(state, "model.started", {"stage": "understanding"})
+        try:
+            saved_intent = (state.get("grill_context", {}) or {}).get("intent_payload")
+            if state.get("regenerate") and saved_intent:
+                request = RequestIntent.model_validate(saved_intent)
+            else:
+                request = classify_request_with_model(
+                    last_msg,
+                    state.get("grill_context", {}) or {},
+                    user_id=state.get("user_id"),
+                )
+        except StreamCancelled:
+            raise
         state["request_intent"] = request.model_dump(mode="json")
         state["current_operation"] = request.operation
         # current_goal remains the compatibility/task key used by tools,
@@ -84,9 +104,11 @@ def create_workflow(
             goal=request.goal,
             continuation=request.continuation,
         )
+        emit_event(state, "model.delta", {"stage": "understanding", "delta": ""})
         return state
 
     def retrieve_memory(state: AgentState) -> AgentState:
+        emit_event(state, "retrieval.started", {"stage": "memory"})
         try:
             if state.get("followup", False):
                 state["memory_context"] = []
@@ -95,9 +117,12 @@ def create_workflow(
                 memories = memory_mgr.retrieve_relevant_memories(query, user_id=state["user_id"])
                 state["memory_context"] = memories
                 log_event(logger, 20, "memory_retrieved", result_count=len(memories))
+        except StreamCancelled:
+            raise
         except Exception as e:
             log_event(logger, 40, "memory_retrieval_failed", error_type=type(e).__name__)
             state["memory_context"] = []
+        emit_event(state, "retrieval.completed", {"stage": "memory", "result_count": len(state["memory_context"])})
         return state
 
     def grill_check(state: AgentState) -> AgentState:
@@ -106,6 +131,18 @@ def create_workflow(
             intent = state.get("current_goal", "general")
             operation = state.get("current_operation", "answer") or "answer"
             request_intent = state.get("request_intent", {}) or {}
+            persisted_context = state.get("grill_context", {}) or {}
+
+            if state.get("regenerate") and persisted_context.get("status") == "completed":
+                state["grill_result"] = {
+                    "action": "execute",
+                    "task": intent if intent != "general" else persisted_context.get("intent"),
+                    "operation": operation,
+                    "context": persisted_context,
+                    "reason": "regenerate",
+                }
+                state["followup"] = False
+                return state
 
             # Advice and ordinary answers are conversational responses, not
             # structured tasks.  Never ask a task profile's required fields
@@ -174,6 +211,8 @@ def create_workflow(
                 field_count=len(result.context.fields),
                 grill_round=result.context.total_rounds,
             )
+        except StreamCancelled:
+            raise
         except Exception as exc:
             # Grill 失败不能阻断原有问答链路；记录错误并放行。
             log_event(logger, 40, "grill_check_failed", error_type=type(exc).__name__)
@@ -191,6 +230,15 @@ def create_workflow(
         """把结构化 Grill 结果转成当前对话的一条 assistant 消息。"""
         result = state.get("grill_result", {})
         message = result.get("message") or result.get("question") or "请补充更多信息。"
+        emit_event(
+            state,
+            "grill.clarify",
+            {
+                "action": result.get("action", "clarify"),
+                "target_field": result.get("target_field"),
+                "message": message,
+            },
+        )
         state["messages"].append({"role": "assistant", "content": message})
         return state
 
@@ -332,6 +380,7 @@ def create_workflow(
             if not state["plan"]:
                 return state
             tool_name = state["plan"].pop(0)
+            emit_event(state, "tool.started", {"tool": tool_name})
 
             execution_context = dict(state.get("grill_context", {}) or {})
             execution_context["intent"] = state.get("current_goal")
@@ -356,6 +405,13 @@ def create_workflow(
             state.setdefault("tool_results", {})[tool_name] = result.model_dump(mode="json")
             state.setdefault("tool_sources", {})[tool_name] = result.sources
             log_event(logger, 20, "workflow_tool_completed", tool_name=tool_name, status=result.status)
+            emit_event(
+                state,
+                "tool.completed",
+                {"tool": tool_name, "status": result.status, "source_count": len(result.sources)},
+            )
+        except StreamCancelled:
+            raise
         except Exception as e:
             log_event(logger, 40, "workflow_tool_failed", tool_name=tool_name, error_type=type(e).__name__)
             # 确保即使出错也记录结果，避免工作流中断
@@ -368,9 +424,11 @@ def create_workflow(
                         "trace_id": state.get("trace_id") or "workflow-fallback",
                     }
                 )
+            emit_event(state, "tool.completed", {"tool": tool_name, "status": "error"})
         return state
 
     def generate_answer(state: AgentState) -> AgentState:
+        emit_event(state, "model.started", {"stage": "answer"})
         messages = state["messages"]
         history_lines = []
         for msg in messages[-5:]:
@@ -453,7 +511,18 @@ def create_workflow(
         try:
             llm = get_llm(task="answer", user_id=state.get("user_id"))
             with start_span("llm.generate", {"intent": state.get("current_goal")}):
-                answer = llm.invoke(prompt)
+                if state.get("stream_emit") is None:
+                    answer = llm.invoke(prompt)
+                else:
+                    chunks: list[str] = []
+                    for chunk in llm.stream(prompt, cancel_event=state.get("cancel_event")):
+                        emit_event(state, "model.delta", {"stage": "answer", "delta": chunk})
+                        chunks.append(chunk)
+                    answer = "".join(chunks)
+                    if not answer:
+                        raise RuntimeError("模型返回为空")
+        except StreamCancelled:
+            raise
         except Exception as exc:
             log_event(logger, 30, "llm_answer_fallback", error_type=type(exc).__name__)
             record_fallback("llm_error")

@@ -2,7 +2,6 @@ import os
 
 import pytest
 
-
 if os.getenv("RUN_BROWSER_E2E") != "1":
     pytest.skip("set RUN_BROWSER_E2E=1 to run browser E2E", allow_module_level=True)
 
@@ -33,6 +32,12 @@ def test_browser_goal_advice_then_explicit_meal_plan():
         question.fill("没有忌口")
         send.click()
         page.get_by_text("我按晚餐", exact=False).wait_for()
+
+        page.get_by_role("button", name="重新生成").last.click()
+        page.get_by_text("我按晚餐", exact=False).last.wait_for()
+        actions = page.locator(".message-actions").last
+        actions.get_by_role("button", name="有帮助").click()
+        playwright.expect(actions.get_by_role("button", name="有帮助")).to_be_disabled()
 
         page.reload(wait_until="domcontentloaded")
         page.get_by_text("我想减肥", exact=True).wait_for()
