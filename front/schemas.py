@@ -115,6 +115,28 @@ class AskRequest(BaseModel):
     user_id: str | None = Field(default=None, max_length=128)
 
 
+class NutritionEstimateRequest(BaseModel):
+    """Input for estimating nutrition after a user saves a meal record."""
+
+    food_name: str = Field(min_length=1, max_length=2_000)
+    meal_type: Literal["breakfast", "lunch", "dinner", "snack"]
+    note: str = Field(default="", max_length=2_000)
+
+
+class NutritionEstimateResponse(BaseModel):
+    """A deliberately approximate, structured nutrition estimate."""
+
+    calories: int | None = Field(default=None, ge=0, le=10_000)
+    protein_g: float | None = Field(default=None, ge=0, le=1_000)
+    carbs_g: float | None = Field(default=None, ge=0, le=1_000)
+    fat_g: float | None = Field(default=None, ge=0, le=1_000)
+    confidence: Literal["low", "medium", "high", "unavailable"] = "unavailable"
+    assumptions: list[str] = Field(default_factory=list, max_length=8)
+    source: Literal["ai", "unavailable"] = "unavailable"
+    status: Literal["estimated", "unavailable"] = "unavailable"
+    message: str = ""
+
+
 class MemoryConsentRequest(BaseModel):
     granted: bool
 

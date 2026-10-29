@@ -68,6 +68,22 @@ export type MealRecord = {
   fat_g?: number;
   note?: string;
   source: 'manual' | 'chat';
+  calorie_status?: 'manual' | 'estimating' | 'estimated' | 'unavailable';
+  calorie_confidence?: 'low' | 'medium' | 'high';
+  calorie_assumptions?: string[];
+  calorie_estimate_version?: 2;
+};
+export type NutritionEstimateInput = { food_name: string; meal_type: MealType; note?: string };
+export type NutritionEstimate = {
+  calories: number | null;
+  protein_g?: number | null;
+  carbs_g?: number | null;
+  fat_g?: number | null;
+  confidence: 'low' | 'medium' | 'high' | 'unavailable';
+  assumptions: string[];
+  source: 'ai' | 'unavailable';
+  status: 'estimated' | 'unavailable';
+  message?: string;
 };
 export type MealPlan = {
   id: ID;

@@ -1,10 +1,11 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { CalendarBlank, CaretLeft, CaretRight, Notebook, Plus, X } from '@phosphor-icons/react';
+import { api } from '../../services/api';
 import { mealRecordService } from '../../services/mealRecords';
 import { useAsync } from '../../hooks/useAsync';
 import { useApp } from '../../app/AppContext';
 import { formatDate, lastDays, shiftDate, toDateKey } from '../../lib/date';
-import type { MealRecord, MealType } from '../../types';
+import type { MealRecord, MealType, NutritionEstimate } from '../../types';
 import { PageHeader } from '../../components/PageHeader';
 import { EmptyState, ErrorState, LoadingState, Badge } from '../../components/State';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
@@ -21,14 +22,101 @@ export function MealRecordsPage() {
   const [form, setForm] = useState(emptyForm);
   const [busy, setBusy] = useState(false);
   const [deleteRecord, setDeleteRecord] = useState<MealRecord | null>(null);
+  const backfillInFlight = useRef(new Set<string>());
   const openCreate = (type: MealType = 'breakfast') => { setEditing(null); setForm({ ...emptyForm, meal_type: type }); setFormOpen(true); };
   const openEdit = (record: MealRecord) => { setEditing(record); setForm({ meal_type: record.meal_type, food_name: record.food_name, calories: record.calories?.toString() || '', note: record.note || '' }); setFormOpen(true); };
+  const applyEstimate = async (recordId: string, estimate: NutritionEstimate) => {
+    if (estimate.status === 'estimated' && estimate.calories != null) {
+      await mealRecordService.update(recordId, {
+        calories: estimate.calories,
+        protein_g: estimate.protein_g ?? undefined,
+        carbs_g: estimate.carbs_g ?? undefined,
+        fat_g: estimate.fat_g ?? undefined,
+        calorie_status: 'estimated',
+        calorie_confidence: estimate.confidence === 'unavailable' ? undefined : estimate.confidence,
+        calorie_assumptions: estimate.assumptions,
+        calorie_estimate_version: 2,
+      });
+      return true;
+    }
+    await mealRecordService.update(recordId, { calorie_status: 'unavailable' });
+    return false;
+  };
+  const backfillRecord = async (record: MealRecord) => {
+    if (backfillInFlight.current.has(record.id)) return;
+    backfillInFlight.current.add(record.id);
+    try {
+      if (record.calorie_status !== 'estimating') {
+        await mealRecordService.update(record.id, { calorie_status: 'estimating' });
+        await retry();
+      }
+      toast(`正在估算“${record.food_name}”的热量…`);
+      const estimate = await api.estimateNutrition({ food_name: record.food_name, meal_type: record.meal_type, note: record.note || '' });
+      const applied = await applyEstimate(record.id, estimate);
+      await retry();
+      toast(applied ? `已回填“${record.food_name}”的热量` : `“${record.food_name}”暂时无法估算热量`, applied ? 'success' : 'error');
+    } catch {
+      await mealRecordService.update(record.id, { calorie_status: 'unavailable' });
+      await retry();
+      toast(`“${record.food_name}”暂时无法估算热量，可编辑后重试`, 'error');
+    } finally {
+      backfillInFlight.current.delete(record.id);
+    }
+  };
+  useEffect(() => {
+    const missing = (records || []).filter((record) => (
+      (record.calories == null && record.calorie_status !== 'unavailable')
+      || (record.calorie_status === 'estimated' && record.calorie_estimate_version !== 2)
+    ));
+    missing.forEach((record) => void backfillRecord(record));
+  }, [records]);
   const submit = async (event: FormEvent) => {
     event.preventDefault(); setBusy(true);
     try {
-      const value = { date, meal_type: form.meal_type, food_name: form.food_name.trim(), calories: form.calories ? Number(form.calories) : undefined, note: form.note.trim(), source: 'manual' as const };
-      if (editing) await mealRecordService.update(editing.id, value); else await mealRecordService.create(value);
-      setFormOpen(false); await retry(); toast(editing ? '记录已更新' : '已保存到本机饮食记录');
+      const foodName = form.food_name.trim();
+      const enteredCalories = form.calories.trim() ? Number(form.calories) : undefined;
+      const hasCalories = enteredCalories != null && Number.isFinite(enteredCalories);
+      const retainedEstimate = Boolean(
+        editing?.calorie_status === 'estimated' && hasCalories && enteredCalories === editing.calories,
+      );
+      const value: Omit<MealRecord, 'id'> = {
+        date,
+        meal_type: form.meal_type,
+        food_name: foodName,
+        calories: hasCalories ? enteredCalories : undefined,
+        note: form.note.trim(),
+        source: 'manual',
+        calorie_status: hasCalories ? (retainedEstimate ? 'estimated' : 'manual') : 'estimating',
+        calorie_confidence: retainedEstimate ? editing?.calorie_confidence : undefined,
+        calorie_assumptions: retainedEstimate ? editing?.calorie_assumptions : undefined,
+        calorie_estimate_version: retainedEstimate ? editing?.calorie_estimate_version : undefined,
+      };
+      const saved = editing
+        ? await mealRecordService.update(editing.id, value)
+        : await mealRecordService.create(value);
+      setFormOpen(false);
+      await retry();
+
+      if (hasCalories) {
+        toast(editing ? '记录已更新' : '已保存到本机饮食记录');
+        return;
+      }
+
+      toast('记录已保存，正在估算热量…');
+      try {
+        const estimate = await api.estimateNutrition({ food_name: foodName, meal_type: form.meal_type, note: form.note.trim() });
+        if (await applyEstimate(saved.id, estimate)) {
+          await retry();
+          toast(`已根据描述估算约 ${estimate.calories} 千卡`);
+        } else {
+          await retry();
+          toast('记录已保存，暂时无法估算热量，可稍后编辑重试', 'error');
+        }
+      } catch {
+        await mealRecordService.update(saved.id, { calorie_status: 'unavailable' });
+        await retry();
+        toast('记录已保存，暂时无法估算热量，可稍后编辑重试', 'error');
+      }
     } catch (reason) { toast(reason instanceof Error ? reason.message : '保存失败', 'error'); }
     finally { setBusy(false); }
   };

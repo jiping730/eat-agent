@@ -123,7 +123,12 @@ pip install -r requirements.txt
 在 `.env` 文件中填写：
 
 ```env
-ZHIPUAI_API_KEY=your_api_key_here
+# Anthropic 兼容中转站；Key 由部署环境注入，不要提交真实值。
+ANTHROPIC_API_KEY=your_relay_api_key_here
+ANTHROPIC_API_BASE=https://api.chineseall.com
+LLM_MODEL=glm-5.3-flash
+LLM_PRIMARY_PROVIDER=anthropic
+LLM_FALLBACK_PROVIDER=anthropic
 TAVILY_API_KEY=your_tavily_key     # 可选，用于联网搜索
 NEO4J_URI=bolt://localhost:7687    # 可选，用于 GraphRAG
 NEO4J_USER=neo4j

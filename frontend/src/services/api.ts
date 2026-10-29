@@ -1,4 +1,4 @@
-import type { ApiTokens, Conversation, ExperienceSettings, GrillState, KnowledgeDocument, Message, Profile, ProfileSuggestion, User } from '../types';
+import type { ApiTokens, Conversation, ExperienceSettings, GrillState, KnowledgeDocument, Message, NutritionEstimate, NutritionEstimateInput, Profile, ProfileSuggestion, User } from '../types';
 import { mockApi, mockStream } from './mock';
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.PROD ? '' : '/api');
@@ -252,6 +252,9 @@ export const api = {
   documents: async () => isMockMode ? mockApi.documents() : listData<KnowledgeDocument>(await request('/me/knowledge/documents')),
   addDocument: (title: string, content: string) => isMockMode ? mockApi.addDocument(title, content) : request<KnowledgeDocument>('/me/knowledge/documents', { method: 'POST', body: JSON.stringify({ source_name: title, title, content }) }),
   deleteDocument: (id: string) => isMockMode ? mockApi.deleteDocument(id) : request(`/me/knowledge/documents/${id}`, { method: 'DELETE' }),
+  estimateNutrition: (input: NutritionEstimateInput) => isMockMode
+    ? mockApi.estimateNutrition(input)
+    : request<NutritionEstimate>('/nutrition/estimate', { method: 'POST', body: JSON.stringify(input) }),
   experienceSettings: async () => {
     if (isMockMode) return mockApi.experienceSettings();
     const [profile, memory] = await Promise.all([request<any>('/me/profile'), request<any>('/memory')]);

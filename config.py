@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     # API Key 由部署环境注入；本地开发和离线测试允许为空，调用层会走兜底逻辑。
     zhipuai_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
     tavily_api_key: Optional[str] = None
     embedding_model: str = "embedding-2"
     llm_model: str = "glm-4-flash"
@@ -28,6 +29,7 @@ class Settings(BaseSettings):
     llm_fallback_provider: str = "zhipuai"
     llm_api_base: str = "https://open.bigmodel.cn/api/paas/v4"
     openai_api_base: str = "https://api.openai.com/v1"
+    anthropic_api_base: str = "https://api.anthropic.com"
     llm_intent_model: str = "glm-4-flash"
     llm_answer_model: Optional[str] = None
     llm_fallback_models: str = ""
@@ -116,8 +118,8 @@ class Settings(BaseSettings):
 
     def startup_warnings(self) -> list[str]:
         warnings: list[str] = []
-        if not self.zhipuai_api_key:
-            warnings.append("未配置 ZHIPUAI_API_KEY，将使用离线降级能力。")
+        if not (self.zhipuai_api_key or self.openai_api_key or self.anthropic_api_key):
+            warnings.append("未配置模型 API Key，将使用离线降级能力。")
         if self.use_graphrag and not self.neo4j_password:
             warnings.append("USE_GRAPHRAG 已开启，但未配置 NEO4J_PASSWORD，GraphRAG 将不可用。")
         if self.auth_mode in {"jwt", "hybrid"} and not self.jwt_secret:

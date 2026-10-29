@@ -249,7 +249,7 @@ class ModelGateway:
 
     @property
     def available(self) -> bool:
-        return bool(settings.zhipuai_api_key or settings.openai_api_key)
+        return bool(settings.zhipuai_api_key or settings.openai_api_key or settings.anthropic_api_key)
 
     @staticmethod
     def build_request(
@@ -318,6 +318,15 @@ class ModelGateway:
                 "model": call_model,
                 "api_key": settings.openai_api_key,
                 "api_base": settings.openai_api_base,
+            }
+        if normalized_provider == "anthropic":
+            if not settings.anthropic_api_key:
+                raise ModelUnavailable("Anthropic 兼容中转站未配置 API Key")
+            call_model = model if "/" in model else f"anthropic/{model}"
+            return {
+                "model": call_model,
+                "api_key": settings.anthropic_api_key,
+                "api_base": settings.anthropic_api_base,
             }
         raise ModelUnavailable("当前模型提供商未配置")
 

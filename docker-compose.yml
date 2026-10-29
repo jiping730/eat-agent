@@ -30,6 +30,8 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://eat_agent:eat_agent@postgres:5432/eat_agent}
       ZHIPUAI_API_KEY: ${ZHIPUAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_API_BASE: ${ANTHROPIC_API_BASE:-${ANTHROPIC_BASE_URL:-https://api.chineseall.com}}
       TAVILY_API_KEY: ${TAVILY_API_KEY:-}
       ENABLE_MCP: ${ENABLE_MCP:-true}
       LOCAL_MCP_SERVER: ${LOCAL_MCP_SERVER:-stdio}
@@ -37,7 +39,11 @@ services:
       MCP_LOCAL_ALLOWED_TOOLS: ${MCP_LOCAL_ALLOWED_TOOLS:-calorie_query,meal_planner}
       MCP_SERVERS_JSON: ${MCP_SERVERS_JSON:-}
       MCP_STARTUP_TIMEOUT_SECONDS: ${MCP_STARTUP_TIMEOUT_SECONDS:-10}
-      LLM_MODEL: ${LLM_MODEL:-glm-4-flash}
+      LLM_MODEL: ${LLM_MODEL:-glm-5.3-flash}
+      LLM_PRIMARY_PROVIDER: ${LLM_PRIMARY_PROVIDER:-anthropic}
+      LLM_FALLBACK_PROVIDER: ${LLM_FALLBACK_PROVIDER:-anthropic}
+      LLM_INTENT_MODEL: ${LLM_INTENT_MODEL:-glm-5.3-flash}
+      LLM_ANSWER_MODEL: ${LLM_ANSWER_MODEL:-glm-5.3-flash}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-embedding-2}
       AUTO_CREATE_SCHEMA: ${AUTO_CREATE_SCHEMA:-false}
       APP_ENV: ${APP_ENV:-development}

@@ -23,6 +23,7 @@ from config import settings
 from core.auth import AuthenticationError, AuthPrincipal, AuthService, hash_refresh_token
 from core.conversation_runtime import ConversationRuntime
 from core.knowledge_base import KnowledgeBaseService
+from core.nutrition_estimator import estimate_nutrition
 from core.personal_knowledge import PersonalKnowledgeService
 from core.logging_config import configure_logging, fingerprint, log_event
 from core.observability import (
@@ -61,6 +62,8 @@ from front.schemas import (
     PersonalKnowledgeTextRequest,
     KnowledgeReviewRequest,
     KnowledgeRollbackRequest,
+    NutritionEstimateRequest,
+    NutritionEstimateResponse,
     ProfileConsentRequest,
     ProfileSuggestionListResponse,
     RefreshRequest,
@@ -247,7 +250,7 @@ def _metrics_auth_error(request: Request) -> JSONResponse | None:
 
 
 async def _call_with_rate_limit(request: Request, call_next):
-    if request.url.path in {"/ask", "/ask/stream"}:
+    if request.url.path in {"/ask", "/ask/stream", "/nutrition/estimate"}:
         client_key = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown")
         client_key = client_key.split(",")[0].strip()
         if not rate_limiter.allow(client_key):
@@ -879,6 +882,20 @@ def ask(data: AskRequest, request: Request):
         tenant_id=tenant_id,
     )
     return response.to_dict()
+
+
+@app.post("/nutrition/estimate", response_model=NutritionEstimateResponse)
+def estimate_food_nutrition(data: NutritionEstimateRequest, request: Request):
+    """Estimate a saved meal without creating a conversation message."""
+
+    user_id = _platform_user_id(request)
+    result = estimate_nutrition(
+        data.food_name,
+        data.meal_type,
+        data.note,
+        user_id=user_id,
+    )
+    return result.to_dict()
 
 
 @app.post("/ask/stream")

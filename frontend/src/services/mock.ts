@@ -1,4 +1,4 @@
-import type { Conversation, ExperienceSettings, GrillState, KnowledgeDocument, Profile, User } from '../types';
+import type { Conversation, ExperienceSettings, GrillState, KnowledgeDocument, NutritionEstimate, NutritionEstimateInput, Profile, User } from '../types';
 import type { StreamHandlers } from './api';
 
 // 独立开发适配器：只有 VITE_USE_MOCK_API=true 才会被调用，不用于生产兜底。
@@ -29,6 +29,20 @@ export const mockApi = {
   documents: async () => { await wait(); return documents; },
   addDocument: async (title: string, content: string) => { await wait(); const doc: KnowledgeDocument = { id: crypto.randomUUID(), title, content, status: 'indexing', created_at: new Date().toISOString() }; documents.unshift(doc); setTimeout(() => { doc.status = 'ready'; }, 1200); return doc; },
   deleteDocument: async (id: string) => { documents = documents.filter((doc) => doc.id !== id); },
+  estimateNutrition: async (input: NutritionEstimateInput): Promise<NutritionEstimate> => {
+    await wait(700);
+    return {
+      calories: 420,
+      protein_g: 18,
+      carbs_g: 58,
+      fat_g: 12,
+      confidence: 'medium',
+      assumptions: [input.note?.trim() || '按常见一份估算，具体份量和做法会影响结果'],
+      source: 'ai',
+      status: 'estimated',
+      message: '热量为 AI 根据食物描述和常见份量估算的近似值',
+    };
+  },
   experienceSettings: async () => settings,
   updateExperienceSettings: async (value: ExperienceSettings) => { settings = value; profile = { ...profile, ...value }; return settings; },
 };
