@@ -22,6 +22,29 @@ def _add_column_if_missing(bind, table: str, column: sa.Column) -> None:
         op.add_column(table, column)
 
 
+def _drop_legacy_source_uniqueness(bind) -> None:
+    """Remove the P1-6 global source-name uniqueness safely.
+
+    Migration 0006 creates both an unnamed ``UniqueConstraint`` and an
+    explicitly named unique index.  PostgreSQL assigns the constraint its own
+    name, so relying on a guessed name makes a fresh PostgreSQL deployment
+    fail even though SQLite accepts the same migration path.
+    """
+
+    inspector = sa.inspect(bind)
+    for constraint in inspector.get_unique_constraints("knowledge_documents"):
+        columns = set(constraint.get("column_names") or [])
+        name = constraint.get("name")
+        if name and columns == {"source_name"}:
+            op.drop_constraint(name, "knowledge_documents", type_="unique")
+
+    for index in inspector.get_indexes("knowledge_documents"):
+        columns = set(index.get("column_names") or [])
+        name = index.get("name")
+        if name and index.get("unique") and columns == {"source_name"}:
+            op.drop_index(name, table_name="knowledge_documents")
+
+
 def _rebuild_documents_for_sqlite(bind) -> None:
     """Replace the old tenant/source unique key without losing versions."""
 
@@ -90,7 +113,7 @@ def upgrade() -> None:
             "knowledge_documents",
             sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
         )
-        op.drop_constraint("uq_knowledge_tenant_source_name", "knowledge_documents", type_="unique")
+        _drop_legacy_source_uniqueness(bind)
         op.create_unique_constraint(
             "uq_knowledge_scope_owner_source_name",
             "knowledge_documents",

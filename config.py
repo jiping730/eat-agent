@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     max_request_bytes: int = 64 * 1024
     rate_limit_per_minute: int = 120
     log_level: str = "INFO"
+    # 默认只写容器标准输出；需要保留本地文件时显式配置 LOG_FILE。
+    log_file: Optional[str] = None
+    log_max_bytes: int = 10 * 1024 * 1024
+    log_backup_count: int = 5
 
     # P0-6 工具执行可靠性。小型平台采用进程内线程池和熔断状态；
     # 跨 Pod 的统一熔断状态留到后续规模化阶段。

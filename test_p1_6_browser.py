@@ -1,4 +1,5 @@
 import os
+import uuid
 
 import pytest
 
@@ -11,16 +12,23 @@ def test_knowledge_admin_page_uploads_and_lists_document():
     with playwright.sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
+        page.goto(base_url, wait_until="domcontentloaded")
+        username = f"knowledge-admin-{uuid.uuid4().hex[:10]}"
+        page.locator("#usernameInput").fill(username)
+        page.locator("#passwordInput").fill("LocalFix!2026")
+        page.get_by_role("button", name="注册").click()
+        page.get_by_text(f"已登录：{username}").wait_for(timeout=30000)
         page.goto(f"{base_url}/admin/knowledge", wait_until="domcontentloaded")
         page.get_by_role("heading", name="知识库管理").wait_for()
 
         page.locator("#knowledgeApiKey").fill("p1-6-admin")
         page.get_by_role("button", name="保存凭据").click()
-        page.get_by_text("共 0 个文档").wait_for()
+        playwright.expect(page.locator("#knowledgeSummary")).to_contain_text("共", timeout=30000)
 
-        page.locator("#knowledgeTitle").fill("浏览器验收文档")
+        title = f"浏览器验收文档-{uuid.uuid4().hex[:8]}"
+        page.locator("#knowledgeTitle").fill(title)
         page.locator("#knowledgeContent").fill("蛋白质是重要的营养素。")
         page.get_by_role("button", name="上传为草稿").click()
-        page.get_by_text("浏览器验收文档").wait_for()
+        page.get_by_text(title).wait_for()
         assert page.get_by_text("draft", exact=True).count() == 1
         browser.close()

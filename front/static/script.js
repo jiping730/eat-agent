@@ -120,13 +120,25 @@ function hideTyping() {
     if (typing) typing.remove();
 }
 
+function resetConversationIdentity() {
+    conversationId = null;
+    currentConversationRendered = false;
+    localStorage.removeItem('conversationId');
+    resetChat();
+}
+
 function persistTokens(data) {
     accessToken = data.access_token;
     refreshToken = data.refresh_token;
-    userId = data.user?.id || userId;
+    const nextUserId = data.user?.id || userId;
+    const identityChanged = Boolean(
+        (userId && nextUserId && userId !== nextUserId) || (!userId && conversationId),
+    );
+    userId = nextUserId;
     localStorage.setItem('accessToken', accessToken);
     localStorage.setItem('refreshToken', refreshToken);
     if (userId) localStorage.setItem('userId', userId);
+    if (identityChanged) resetConversationIdentity();
     updateAuthUi(data.user);
 }
 
@@ -135,6 +147,8 @@ function clearTokens() {
     refreshToken = null;
     localStorage.removeItem('accessToken');
     localStorage.removeItem('refreshToken');
+    localStorage.removeItem('userId');
+    resetConversationIdentity();
     updateAuthUi(null);
 }
 

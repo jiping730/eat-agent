@@ -92,7 +92,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-logger = configure_logging(settings.log_level)
+logger = configure_logging(
+    settings.log_level,
+    log_file=settings.log_file,
+    max_bytes=settings.log_max_bytes,
+    backup_count=settings.log_backup_count,
+)
 startup_errors = settings.startup_errors()
 if startup_errors:
     raise RuntimeError("生产安全配置无效: " + "; ".join(startup_errors))
@@ -352,20 +357,46 @@ def profile_page(request: Request):
 @app.get("/health/live", include_in_schema=False)
 @app.get("/healthz", include_in_schema=False)
 def health_live():
-    return {"status": "ok", "version": settings.app_version}
+    return {"status": "ok", "version": settings.app_version, "checks": {"application": "ok"}}
 
 
 @app.get("/health/ready", include_in_schema=False)
 @app.get("/readyz", include_in_schema=False)
 def health_ready(request: Request):
+    checks = {"database": "ok", "coordination": "disabled" if not runtime.coordinator.enabled else "ok"}
+    failed = False
     try:
         runtime.store.ping()
-        runtime.coordinator.ping()
     except Exception as exc:
-        log_event(logger, 40, "readiness_failed", request_id=_request_id(request), error_type=type(exc).__name__)
-        if settings.redis_url:
-            return JSONResponse(status_code=503, content={"status": "not_ready", "request_id": _request_id(request)})
-    return {"status": "ready", "version": settings.app_version}
+        failed = True
+        checks["database"] = "error"
+        log_event(
+            logger,
+            40,
+            "readiness_failed",
+            request_id=_request_id(request),
+            component="database",
+            error_type=type(exc).__name__,
+        )
+    if runtime.coordinator.enabled:
+        try:
+            runtime.coordinator.ping()
+        except Exception as exc:
+            failed = True
+            checks["coordination"] = "error"
+            log_event(
+                logger,
+                40,
+                "readiness_failed",
+                request_id=_request_id(request),
+                component="coordination",
+                error_type=type(exc).__name__,
+            )
+    payload = {"status": "not_ready" if failed else "ready", "version": settings.app_version, "checks": checks}
+    if failed:
+        payload["request_id"] = _request_id(request)
+        return JSONResponse(status_code=503, content=payload)
+    return payload
 
 
 @app.get("/metrics", include_in_schema=False)

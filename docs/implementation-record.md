@@ -951,9 +951,48 @@ Ruff 变更范围检查：通过
 - 追问黄金集和营养事实来源仍需持续扩充，属于 P2-3 后续维护项；本阶段不把已有测试集数量包装成完整评测平台。
 - 离线回答是安全可解释的降级路径，不等同于配置模型后的完整生成质量。
 
-## 23. 当前已知边界
+## 23. P2-4：本地部署与运行维护实施记录
 
-本记录只记录已经实际完成的 Grill Engine、P01、P02、P03、P04、P05、P0-8、P1-0～P1-6、P2-1～P2-3 和 P2-5，不把后续计划写成已完成能力。
+本阶段严格按照主线中的 `P2-4` 实施，但根据用户确认暂缓备份恢复和数据导出导入，先完成个人小型平台日常启动、升级检查、健康确认和空间清理闭环。完整说明见 [P2-4 实施文档](p2-4-implementation.md)。
+
+### 23.1 实际落地内容
+
+- `scripts/platform.ps1` 提供 `start`、`stop`、`restart`、`status` 和 `logs`；启动会构建 Compose 服务并等待 `eat-agent` 健康检查，停止不会删除数据卷。
+- `docker-compose.yml` 使用 `APP_IMAGE` 覆盖镜像标签，默认切换到 `eat-agent:p2-4`；启动前先执行只读迁移预检，再执行 `alembic upgrade head`。
+- `scripts/migration_check.py` 检查数据库连通性、当前 Alembic 版本、仓库 Head 和多 Head 状态；普通检查只报告待迁移，`--require-up-to-date` 可作为升级后门禁。
+- `core/logging_config.py` 保留控制台 JSON 日志，新增可选 `RotatingFileHandler`；默认不写文件，配置 `LOG_FILE` 后按大小轮转并保留 `LOG_BACKUP_COUNT` 个历史文件。
+- `/health/live` 和 `/health/ready` 返回组件检查结果；就绪检查分别确认数据库和可选 Redis 协调器，失败时返回 503 和脱敏后的组件状态。
+- `scripts/docker_cleanup.py` 默认 dry-run；确认后只清理当前 Compose 项目的停止容器、旧 `eat-agent` 镜像和七天以前的保守构建缓存，保留运行中镜像、最近两个镜像版本，不删除卷。
+- 本地验收环境补齐 `.env` 中的 `JWT_SECRET`（文件被 Git 忽略）；前端在登录身份切换或退出时清理旧的 `conversationId`，避免新用户复用匿名用户会话而触发 `ConversationAccessError`。
+
+### 23.2 实际验收
+
+```text
+P2-4 专项测试：6 passed
+全量非浏览器测试：155 passed，1 skipped
+Ruff（P2-4 变更范围）：通过
+Docker Compose config：通过
+PowerShell platform.ps1 参数解析：通过
+git diff --check：通过
+Docker 镜像构建：`eat-agent:p2-4` 构建并启动成功
+PostgreSQL 真实迁移：`0005` → `0010_p2_3_personal_knowledge` 通过，无多 Head
+Docker Compose 真实状态：PostgreSQL、Redis、eat-agent 均为 healthy
+正式端口验收：`0.0.0.0:5000->5000`；`/healthz` 和 `/readyz` 均返回 200，database/coordination 均为 ok
+对话浏览器 E2E：2 passed（模型模式下建议、餐食追问、忌口补充、重新生成、反馈、刷新恢复，以及登录后旧会话清理）
+P1-6/P2-3 浏览器回归：2 passed（真实 JWT 登录后访问知识库页面）
+```
+
+本次 Docker 验收保留了 PostgreSQL、Redis 和应用数据卷，没有执行清卷或全局镜像清理。浏览器测试使用正式端口 `5000`，未启动 `5016` 或 `5017`；管理页重复验收改用唯一文档标题，不依赖空数据库。
+
+### 23.3 明确暂缓范围
+
+- `scripts/backup_postgres.py` 和 `scripts/restore_postgres.py` 保留原样，不扩展 SQLite 备份、恢复演练或自动化定时任务。
+- 不新增个人档案、会话、知识库导出/导入，不引入对象存储和跨机器备份保留策略。
+- Docker 清理不删除卷、不使用 `docker system prune -a`；BuildKit 缓存只能按时间做保守清理，不能伪装成精确的 Compose 项目级归属。
+
+## 24. 当前已知边界
+
+本记录只记录已经实际完成的 Grill Engine、P01、P02、P03、P04、P05、P0-8、P1-0～P1-6、P2-1～P2-5 和 P2-4 运行维护基础闭环，不把后续计划写成已完成能力。
 
 当前仍有以下边界：
 

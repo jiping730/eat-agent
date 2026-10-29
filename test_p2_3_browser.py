@@ -14,12 +14,12 @@ def test_personal_knowledge_page_imports_retrieves_and_deletes_document():
     with playwright.sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
-        page.add_init_script(
-            """
-            localStorage.setItem('knowledgeApiKey', 'p1-6-admin');
-            localStorage.setItem('userId', 'browser-user-1');
-            """
-        )
+        page.goto(base_url, wait_until="domcontentloaded")
+        username = f"personal-knowledge-{uuid.uuid4().hex[:10]}"
+        page.locator("#usernameInput").fill(username)
+        page.locator("#passwordInput").fill("LocalFix!2026")
+        page.get_by_role("button", name="注册").click()
+        page.get_by_text(f"已登录：{username}").wait_for(timeout=30000)
         page.goto(f"{base_url}/me/knowledge", wait_until="domcontentloaded")
         page.get_by_role("heading", name="我的知识").wait_for()
 

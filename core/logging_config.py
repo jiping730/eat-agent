@@ -9,6 +9,7 @@ import os
 import re
 import sys
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from typing import Any
 
 from core.observability import observation_fields
@@ -33,14 +34,54 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False, default=str)
 
 
-def configure_logging(level: str = "INFO") -> logging.Logger:
+def _handler_matches_file(handler: logging.Handler, log_file: str) -> bool:
+    if not isinstance(handler, RotatingFileHandler):
+        return False
+    return os.path.abspath(handler.baseFilename) == os.path.abspath(log_file)
+
+
+def configure_logging(
+    level: str = "INFO",
+    log_file: str | None = None,
+    max_bytes: int = 10 * 1024 * 1024,
+    backup_count: int = 5,
+) -> logging.Logger:
+    """Configure JSON console logging and optional size-based file rotation.
+
+    The function is intentionally idempotent because most application modules
+    obtain the shared logger during import.  Console output remains enabled in
+    every mode; the file handler is only added when ``log_file`` is non-empty.
+    """
+
     logger = logging.getLogger("eat_agent")
+    # Alembic's fileConfig may disable existing named loggers while running a
+    # migration.  Re-enabling the shared application logger keeps later
+    # requests and repeated test/application initialization observable.
+    logger.disabled = False
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
-    if not logger.handlers:
+    formatter = JsonFormatter()
+    if not any(
+        isinstance(handler, logging.StreamHandler) and not isinstance(handler, logging.FileHandler)
+        for handler in logger.handlers
+    ):
         stream = sys.stderr if os.getenv("MCP_STDIO", "").lower() == "1" else sys.stdout
         handler = logging.StreamHandler(stream)
-        handler.setFormatter(JsonFormatter())
+        handler.setFormatter(formatter)
         logger.addHandler(handler)
+    if log_file:
+        path = os.path.abspath(os.path.expanduser(log_file))
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        if not any(_handler_matches_file(handler, path) for handler in logger.handlers):
+            file_handler = RotatingFileHandler(
+                path,
+                maxBytes=max(1, int(max_bytes)),
+                backupCount=max(0, int(backup_count)),
+                encoding="utf-8",
+            )
+            file_handler.setFormatter(formatter)
+            logger.addHandler(file_handler)
+    for handler in logger.handlers:
+        handler.setLevel(logger.level)
     logger.propagate = False
     return logger
 

@@ -17,6 +17,20 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Alembic creates ``alembic_version.version_num`` as VARCHAR(32) by
+    # default.  This revision ID is longer than that, and PostgreSQL enforces
+    # the length while SQLite silently accepts it.  Widen the version column
+    # before Alembic records this revision; SQLite needs no DDL because it does
+    # not enforce VARCHAR length and does not support ALTER COLUMN directly.
+    if op.get_bind().dialect.name == "postgresql":
+        op.alter_column(
+            "alembic_version",
+            "version_num",
+            existing_type=sa.String(length=32),
+            type_=sa.String(length=255),
+            existing_nullable=False,
+        )
+
     op.create_table(
         "profile_suggestions",
         sa.Column("id", sa.String(length=128), nullable=False),

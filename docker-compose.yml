@@ -25,7 +25,7 @@ services:
       retries: 12
 
   eat-agent:
-    image: eat-agent:p1-4
+    image: ${APP_IMAGE:-eat-agent:p2-4}
     build: .
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://eat_agent:eat_agent@postgres:5432/eat_agent}
@@ -58,6 +58,9 @@ services:
       MAX_REQUEST_BYTES: ${MAX_REQUEST_BYTES:-65536}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FILE: ${LOG_FILE:-}
+      LOG_MAX_BYTES: ${LOG_MAX_BYTES:-10485760}
+      LOG_BACKUP_COUNT: ${LOG_BACKUP_COUNT:-5}
       TOOL_DEFAULT_TIMEOUT_SECONDS: ${TOOL_DEFAULT_TIMEOUT_SECONDS:-15}
       TOOL_MAX_ATTEMPTS: ${TOOL_MAX_ATTEMPTS:-3}
       TOOL_RETRY_BASE_DELAY_MS: ${TOOL_RETRY_BASE_DELAY_MS:-200}
@@ -84,10 +87,10 @@ services:
     volumes:
       - app_data:/app/data
     command:
-      ["sh", "-c", "alembic upgrade head && exec gunicorn --bind 0.0.0.0:5000 --workers 2 --timeout 120 -k uvicorn.workers.UvicornWorker front.app:app"]
+      ["sh", "-c", "python scripts/migration_check.py && alembic upgrade head && exec gunicorn --bind 0.0.0.0:5000 --workers 2 --timeout 120 -k uvicorn.workers.UvicornWorker front.app:app"]
     healthcheck:
       test:
-        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz')"]
+        ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/healthz', timeout=3)"]
       interval: 10s
       timeout: 5s
       retries: 12
