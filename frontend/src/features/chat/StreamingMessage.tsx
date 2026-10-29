@@ -1,0 +1,3 @@
+export function StreamingMessage({ content }: { content: string }) {
+  return <div className="flex justify-start" role="status" aria-live="polite"><div className="max-w-[88%] rounded-card rounded-bl-sm bg-paper px-4 py-3 shadow-soft sm:max-w-[76%]">{content ? <p className="prose-chat">{content}<span className="ml-1 inline-block h-4 w-0.5 animate-pulse bg-sage align-middle" /></p> : <div className="flex h-7 items-center gap-1.5 px-1" aria-label="正在理解问题并生成回答">{[0, 1, 2].map((item) => <span key={item} className="size-1.5 rounded-full bg-sage" style={{ animation: `pulse-dot 1.2s ${item * 160}ms infinite` }} />)}</div>}</div></div>;
+}

@@ -1,0 +1,11 @@
+import { useState } from 'react';
+import { CheckCircle, ClipboardText, Info } from '@phosphor-icons/react';
+import type { GrillState } from '../../types';
+
+export function GrillQuestionCard({ state, busy, onAnswer, onExecute }: { state: GrillState; busy: boolean; onAnswer: (value: string) => void; onExecute: () => void }) {
+  const [custom, setCustom] = useState('');
+  if (state.status === 'ready') return <section className="card border-l-4 border-l-sage p-4 sm:p-5" aria-label="已收集信息摘要"><div className="flex items-center gap-2 font-semibold text-sage"><CheckCircle size={21} />信息已足够，可以开始</div><p className="mt-2 text-sm muted">请确认本次已收集的信息：</p><dl className="mt-3 space-y-2">{Object.entries(state.collected).map(([key, value]) => <div key={key} className="flex gap-3 text-sm"><dt className="min-w-20 muted">{key}</dt><dd className="font-medium">{value}</dd></div>)}</dl><button className="btn btn-primary mt-5 w-full" onClick={onExecute} disabled={busy}>确认信息并继续</button></section>;
+  const question = state.question;
+  if (!question) return null;
+  return <section className="card border-l-4 border-l-apricot p-4 sm:p-5" aria-labelledby="grill-title"><div className="flex items-center gap-2 text-sm font-semibold text-amber-900"><ClipboardText size={20} />还需要一项信息</div><h3 id="grill-title" className="mt-3 text-lg font-semibold">{question.question}</h3><p className="mt-2 flex items-start gap-2 text-sm leading-6 muted"><Info size={17} className="mt-1 shrink-0" />{question.reason}</p><div className="mt-4 grid gap-2 sm:grid-cols-3">{question.options.map((option) => <button key={option.value} className="btn btn-secondary h-auto min-h-12 whitespace-normal py-2" onClick={() => onAnswer(option.value)} disabled={busy}>{option.label}</button>)}</div>{question.allow_custom && <form className="mt-3 flex gap-2" onSubmit={(e) => { e.preventDefault(); if (custom.trim()) onAnswer(custom.trim()); }}><label className="sr-only" htmlFor="grill-custom">其他回答</label><input id="grill-custom" className="input" value={custom} onChange={(e) => setCustom(e.target.value)} placeholder="也可以自己填写" /><button className="btn btn-outline shrink-0" disabled={!custom.trim() || busy}>回答</button></form>}<p className="mt-3 text-xs subtle">本次只确认这一项，其余上下文都会保留。</p></section>;
+}

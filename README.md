@@ -10,7 +10,7 @@
 - **多轮对话** — 短期记忆 + 长期记忆（FAISS 向量化），支持追问与上下文关联
 - **GraphRAG** — 可选 Neo4j 图检索，支持食物搭配关系查询
 - **MCP 协议** — 提供本地 MCP Server，支持外部工具调用
-- **Web 界面** — Flask 前端，开箱即用的聊天式交互
+- **Web 界面** — FastAPI API + 移动端优先 React 界面，开箱即用
 
 ## 实施记录
 
@@ -24,9 +24,12 @@
 agent1/
 ├── main.py                  # CLI 入口（调用统一 ConversationRuntime）
 ├── config.py                # 全局配置（Pydantic Settings）
-├── .env                     # 环境变量（API Key 等）
+├── .env.example             # 本地配置模板（真实 .env 不入 Git）
 ├── requirements.txt         # 依赖清单
-├── pyproject.toml           # 项目元数据 & 构建配置
+├── pyproject.toml           # 项目元数据、pytest 与工具配置
+├── Dockerfile               # 应用镜像构建
+├── docker-compose.yml       # 本地小型平台编排
+├── alembic.ini              # 数据库迁移入口
 │
 ├── agent/                   # Agent 核心
 │   ├── agent_executor.py    # 旧入口兼容适配器，转发到统一 Workflow
@@ -57,12 +60,23 @@ agent1/
 │   ├── local_server.py      # 本地 MCP Server（热量查询 + 餐食规划）
 │   └── firecrawl_client.py  # Firecrawl 爬虫客户端
 │
-├── front/                   # Web 前端
-│   ├── app.py               # Flask 应用
-│   ├── templates/index.html # 聊天页面
-│   └── static/              # JS / CSS
+├── front/                   # FastAPI API 包
+│   ├── app.py               # API、认证、会话和健康检查入口
+│   └── schemas.py           # API 请求/响应模型
 │
-└── data/                    # 数据目录
+├── frontend/                # 新版 React 移动端优先前端（生产由 5000 托管，开发可用 5173）
+│   ├── src/                 # 页面、组件、API service 和设计令牌
+│   ├── docs/                # 设计系统和 UI 验收记录
+│   └── README.md            # 前端启动与接口说明
+│
+├── config/grill_profiles/   # Grill 任务画像配置
+├── migrations/              # Alembic 数据库迁移
+├── scripts/                 # 启停、迁移、备份与 Docker 运维脚本
+├── tests/                   # 全部自动化测试（单元、集成、浏览器）
+├── evaluation/              # RAG / Grill 评测样例
+├── docs/                    # 实施主线、阶段记录和专项说明（入口见 docs/README.md）
+├── deploy/                  # 可选 Kubernetes/监控部署清单
+└── data/                    # 本地运行数据（索引与知识文档）
     ├── documents/           # 知识文档（.txt）
     ├── vector_store/        # FAISS 索引
     └── memory/              # 记忆存储
@@ -128,18 +142,41 @@ NEO4J_PASSWORD=your_password
 python main.py
 ```
 
-**Web 模式：**
+**Web 模式（单端口）：**
 
 ```bash
+cd frontend
+npm ci
+npm run build
+cd ..
 python front/app.py
-# 访问 http://localhost:5000
+# 访问 http://localhost:5000；FastAPI 同时提供 API 和 React 页面
 ```
+
+**React 开发模式（可选）：**
+
+```bash
+cd frontend
+npm ci
+copy .env.example .env.local  # Windows
+npm run dev
+# 访问 http://localhost:5173；仅用于前端热更新开发
+```
+
+React 前端是项目唯一的 Web 界面；生产构建由 FastAPI 在 `5000` 端口托管，`front/` 仅提供 API 和静态文件托管。真实接口默认关闭 mock；只有将 `VITE_USE_MOCK_API=true` 写入 `frontend/.env.local` 时才使用本地预览数据。
 
 **Docker 模式：**
 
 ```bash
-docker build -t eat-agent .
-docker run --env-file .env -p 5000:5000 eat-agent
+docker compose up -d --build
+# 访问 http://localhost:5000
+```
+
+### 6. 测试
+
+```bash
+pytest -m "not e2e"       # 默认测试集
+pytest -m e2e              # 浏览器验收，需要已启动服务和 Playwright
 ```
 
 ## 配置说明

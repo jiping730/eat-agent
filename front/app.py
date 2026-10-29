@@ -1,4 +1,4 @@
-"""FastAPI application for the small-platform API and browser UI."""
+"""FastAPI application for the small-platform API used by the React frontend."""
 
 from __future__ import annotations
 
@@ -12,9 +12,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response, StreamingResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.cors import CORSMiddleware
@@ -78,10 +76,21 @@ from front.schemas import (
     TenantUpdateRequest,
 )
 
-ROOT_DIR = Path(__file__).resolve().parent
 app = FastAPI(title="轻松食 · 智能营养助手", version=settings.app_version)
-app.mount("/static", StaticFiles(directory=ROOT_DIR / "static"), name="static")
-templates = Jinja2Templates(directory=str(ROOT_DIR / "templates"))
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+FRONTEND_DIST_DIR = PROJECT_ROOT / "frontend" / "dist"
+FRONTEND_INDEX_FILE = FRONTEND_DIST_DIR / "index.html"
+FRONTEND_PUBLIC_PATHS = {
+    "/",
+    "/login",
+    "/chat",
+    "/records",
+    "/nutrition",
+    "/recipes",
+    "/profile",
+    "/knowledge",
+}
 
 origins = settings.cors_origin_list()
 app.add_middleware(
@@ -124,9 +133,6 @@ PUBLIC_PATHS = {
     "/docs",
     "/redoc",
     "/openapi.json",
-    "/admin/knowledge",
-    "/profile",
-    "/me/knowledge",
 }
 
 
@@ -217,8 +223,8 @@ def _token_response(user, token_pair) -> dict:
 def _stable_path(path: str) -> str:
     if path.startswith("/conversations/"):
         return "/conversations/:id"
-    if path.startswith("/static/"):
-        return "/static/:asset"
+    if path.startswith("/assets/"):
+        return "/assets/:asset"
     if path.startswith("/messages/"):
         return "/messages/:id"
     return path
@@ -264,7 +270,7 @@ async def request_context(request: Request, call_next):
         if request.url.path == "/metrics":
             early_response = _metrics_auth_error(request)
             response = early_response if early_response is not None else await call_next(request)
-        elif request.url.path not in PUBLIC_PATHS and not request.url.path.startswith("/static/"):
+        elif request.url.path not in PUBLIC_PATHS and not _is_frontend_path(request.url.path):
             try:
                 request.state.principal = auth_service.authenticate(
                     request.headers.get("Authorization"),
@@ -334,24 +340,8 @@ async def handle_unexpected_error(request: Request, error: Exception):
     return _error_response(request, "服务暂时不可用，请稍后再试", 500, "internal_error")
 
 
-@app.get("/", include_in_schema=False)
-def index(request: Request):
-    return templates.TemplateResponse(request=request, name="index.html", context={})
-
-
-@app.get("/admin/knowledge", include_in_schema=False)
-def knowledge_admin_page(request: Request):
-    return templates.TemplateResponse(request=request, name="knowledge.html", context={})
-
-
-@app.get("/me/knowledge", include_in_schema=False)
-def personal_knowledge_page(request: Request):
-    return templates.TemplateResponse(request=request, name="personal_knowledge.html", context={})
-
-
-@app.get("/profile", include_in_schema=False)
-def profile_page(request: Request):
-    return templates.TemplateResponse(request=request, name="profile.html", context={})
+def _is_frontend_path(path: str) -> bool:
+    return path in FRONTEND_PUBLIC_PATHS or path.startswith("/chat/") or path.startswith("/assets/")
 
 
 @app.get("/health/live", include_in_schema=False)
@@ -989,6 +979,31 @@ def message_feedback(message_id: int, data: MessageFeedbackRequest, request: Req
         tenant_id=_tenant_context(request, user_id).tenant_id,
     )
     return {"status": "saved", "id": feedback.id, "message_id": feedback.message_id, "rating": feedback.rating}
+
+
+@app.get("/{path:path}", include_in_schema=False)
+def frontend(path: str):
+    """Serve the production React bundle with SPA fallback."""
+
+    if not FRONTEND_INDEX_FILE.is_file():
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "前端尚未构建",
+                "error_code": "frontend_not_built",
+                "hint": "请执行 npm run build，或使用 Docker 构建镜像",
+            },
+        )
+
+    requested = (FRONTEND_DIST_DIR / path).resolve()
+    try:
+        requested.relative_to(FRONTEND_DIST_DIR.resolve())
+    except ValueError:
+        return JSONResponse(status_code=404, content={"error": "资源不存在", "error_code": "not_found"})
+
+    if requested.is_file():
+        return FileResponse(requested)
+    return FileResponse(FRONTEND_INDEX_FILE)
 
 
 if __name__ == "__main__":

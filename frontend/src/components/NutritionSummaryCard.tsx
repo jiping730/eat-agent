@@ -1,0 +1,6 @@
+import { Fire, Info } from '@phosphor-icons/react';
+
+export function NutritionSummaryCard({ calories, target, label = '今日已记录' }: { calories: number; target?: number; label?: string }) {
+  const percent = target && target > 0 ? Math.min(100, Math.round((calories / target) * 100)) : null;
+  return <section className="card card-pad"><div className="flex items-start justify-between gap-4"><div><p className="text-sm font-medium muted">{label}</p><p className="mt-2 flex items-baseline gap-2"><strong className="text-3xl font-semibold tracking-tight">{calories || '—'}</strong><span className="text-sm muted">千卡</span></p></div><span className="flex size-11 items-center justify-center rounded-full bg-orange-50 text-amber-800"><Fire size={23} weight="light" /></span></div>{percent !== null ? <div className="mt-5"><div className="h-2 overflow-hidden rounded-full bg-stone-100"><div className="h-full rounded-full bg-sage transition-all duration-500" style={{ width: `${percent}%` }} /></div><p className="mt-2 text-xs muted">约占个人目标的 {percent}%</p></div> : <p className="mt-4 flex items-start gap-1.5 text-xs leading-5 subtle"><Info size={15} className="mt-0.5 shrink-0" />设置健康目标后，可查看目标完成度。</p>}</section>;
+}
