@@ -4,8 +4,10 @@ try:
 except ImportError:
     _has_embeddings = False
     from typing import List
-    from config import settings
+
     from langchain_core.embeddings import Embeddings  # 导入基类
+
+    from config import settings
 
     try:
         from zhipuai import ZhipuAI

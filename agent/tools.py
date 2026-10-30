@@ -1,6 +1,7 @@
 # agent/tools.py
 
-from langchain.tools import Tool
+from langchain_core.tools import Tool
+
 from core.tool_registry import retrieve_knowledge, search_web
 
 

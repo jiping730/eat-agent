@@ -9,8 +9,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable, List, Literal, Optional
 
-from langchain.llms.base import LLM
 from langchain_core.callbacks.manager import CallbackManagerForLLMRun
+from langchain_core.language_models.llms import LLM
+
 try:
     from zhipuai import ZhipuAI
 except ImportError:  # pragma: no cover - the legacy SDK is intentionally optional.

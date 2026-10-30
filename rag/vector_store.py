@@ -1,9 +1,11 @@
 import os
+
+from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain_community.vectorstores import FAISS
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import TextLoader, DirectoryLoader
-from rag.embeddings import get_embeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 from config import settings
+from rag.embeddings import get_embeddings
 
 def create_vector_store(documents_path: str, vector_store_path: str):
     # 加载所有.txt文档

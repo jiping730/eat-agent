@@ -1,4 +1,4 @@
-from langchain.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate
 
 react_prompt = PromptTemplate.from_template(
     """你是一个专业的营养健康助手，专注于回答食物热量、营养成分和合理餐食组合的问题。你可以访问知识库检索工具获取信息。

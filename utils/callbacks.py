@@ -1,6 +1,8 @@
 import time
-from langchain.callbacks.base import BaseCallbackHandler
-from typing import Dict, Any
+from typing import Any, Dict
+
+from langchain_core.callbacks import BaseCallbackHandler
+
 
 class PerformanceCallbackHandler(BaseCallbackHandler):
     def __init__(self):
