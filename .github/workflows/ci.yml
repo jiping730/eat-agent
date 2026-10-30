@@ -113,7 +113,7 @@ jobs:
       - name: Build immutable CI image
         run: docker build --pull -t eat-agent:${{ github.sha }} .
       - name: Scan image for critical and high vulnerabilities
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: eat-agent:${{ github.sha }}
           format: table
