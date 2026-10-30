@@ -255,12 +255,19 @@ def _seed_grill_conversation(store, conversation_id, context):
 
 def test_runtime_applies_skip_revise_and_restart_actions(tmp_path):
     store = ConversationStore(database_url=f"sqlite:///{tmp_path / 'grill-actions.db'}")
-    context = GrillEngine().process(
-        get_profile("meal_planner"),
-        "晚餐",
+    engine = GrillEngine()
+    profile = get_profile("meal_planner")
+    first = engine.process(profile, "晚餐", current_intent="meal_planner", operation="plan")
+    complete = engine.process(
+        profile,
+        "没有忌口",
+        first.context,
         current_intent="meal_planner",
         operation="plan",
-    ).context.model_dump(mode="json")
+    )
+    context = complete.context.model_dump(mode="json")
+    context["pending_field"] = "health_goal"
+    context["status"] = "collecting"
     runtime = ConversationRuntime(workflow=RaisingWorkflow(), memory_mgr=MemoryStub(), store=store)
 
     actions = (
