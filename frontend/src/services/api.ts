@@ -129,6 +129,21 @@ function normalizeSuggestion(raw: any): ProfileSuggestion {
   return { ...raw, field, value } as ProfileSuggestion;
 }
 
+function normalizeKnowledgeDocument(raw: any): KnowledgeDocument {
+  const status: KnowledgeDocument['status'] = raw.status === 'published'
+    ? 'ready'
+    : ['deleted', 'rejected'].includes(raw.status)
+      ? 'failed'
+      : 'indexing';
+  return {
+    ...raw,
+    id: String(raw.id ?? ''),
+    title: String(raw.title ?? raw.source_name ?? '未命名文档'),
+    content: raw.content ?? raw.versions?.[0]?.content,
+    status,
+  };
+}
+
 function normalizeGrill(raw: any): GrillState | null {
   if (!raw) return null;
   if (raw.status && raw.question && raw.question.options) return raw as GrillState;
@@ -249,7 +264,9 @@ export const api = {
   updateProfile: (profile: Profile) => isMockMode ? mockApi.updateProfile(profile) : request<any>('/me/profile', { method: 'PUT', body: JSON.stringify(profilePayload(profile)) }).then(normalizeProfile),
   deleteProfile: () => isMockMode ? mockApi.updateProfile({ nickname: '', dietary_preferences: [], restrictions: [], allergies: [], memory_enabled: false, personalization_enabled: false }) : request('/me/profile', { method: 'DELETE' }),
   profileSuggestions: async () => isMockMode ? mockApi.profileSuggestions() : listData<any>(await request('/me/profile/suggestions')).map(normalizeSuggestion),
-  documents: async () => isMockMode ? mockApi.documents() : listData<KnowledgeDocument>(await request('/me/knowledge/documents')),
+  documents: async () => isMockMode
+    ? mockApi.documents()
+    : listData<any>(await request('/me/knowledge/documents')).map(normalizeKnowledgeDocument),
   addDocument: (title: string, content: string) => {
     if (isMockMode) return mockApi.addDocument(title, content);
     // `source_name` is an internal storage key, not the user-facing title.
