@@ -257,7 +257,7 @@ def test_runtime_applies_skip_revise_and_restart_actions(tmp_path):
     store = ConversationStore(database_url=f"sqlite:///{tmp_path / 'grill-actions.db'}")
     context = GrillEngine().process(
         get_profile("meal_planner"),
-        "我想吃点东西",
+        "晚餐",
         current_intent="meal_planner",
         operation="plan",
     ).context.model_dump(mode="json")
