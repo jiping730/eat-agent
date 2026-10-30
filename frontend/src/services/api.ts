@@ -250,7 +250,17 @@ export const api = {
   deleteProfile: () => isMockMode ? mockApi.updateProfile({ nickname: '', dietary_preferences: [], restrictions: [], allergies: [], memory_enabled: false, personalization_enabled: false }) : request('/me/profile', { method: 'DELETE' }),
   profileSuggestions: async () => isMockMode ? mockApi.profileSuggestions() : listData<any>(await request('/me/profile/suggestions')).map(normalizeSuggestion),
   documents: async () => isMockMode ? mockApi.documents() : listData<KnowledgeDocument>(await request('/me/knowledge/documents')),
-  addDocument: (title: string, content: string) => isMockMode ? mockApi.addDocument(title, content) : request<KnowledgeDocument>('/me/knowledge/documents', { method: 'POST', body: JSON.stringify({ source_name: title, title, content }) }),
+  addDocument: (title: string, content: string) => {
+    if (isMockMode) return mockApi.addDocument(title, content);
+    // `source_name` is an internal storage key, not the user-facing title.
+    // Keep it valid and unique so arbitrary titles cannot be rejected or
+    // accidentally overwrite an earlier document with the same title.
+    const sourceName = `personal-${crypto.randomUUID()}.md`;
+    return request<KnowledgeDocument>('/me/knowledge/documents', {
+      method: 'POST',
+      body: JSON.stringify({ source_name: sourceName, title, content }),
+    });
+  },
   deleteDocument: (id: string) => isMockMode ? mockApi.deleteDocument(id) : request(`/me/knowledge/documents/${id}`, { method: 'DELETE' }),
   estimateNutrition: (input: NutritionEstimateInput) => isMockMode
     ? mockApi.estimateNutrition(input)
