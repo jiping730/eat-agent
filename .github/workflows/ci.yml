@@ -75,6 +75,7 @@ jobs:
           AUTO_CREATE_SCHEMA: "true"
           REDIS_URL: ""
           APP_ENV: development
+          JWT_SECRET: ci-e2e-secret-for-authentication-only
         run: |
           nohup uvicorn front.app:app --host 127.0.0.1 --port 5000 >/tmp/eat-agent-e2e.log 2>&1 &
           for attempt in $(seq 1 30); do
@@ -88,6 +89,7 @@ jobs:
           DATABASE_URL: sqlite:////tmp/eat-agent-e2e.db
           AUTO_CREATE_SCHEMA: "true"
           REDIS_URL: ""
+          JWT_SECRET: ci-e2e-secret-for-authentication-only
         run: pytest -q -m e2e tests/test_browser_e2e.py
 
   helm:
