@@ -29,6 +29,12 @@ config_local.py
 # 日志
 *.log
 
+# 测试与静态检查缓存
+.pytest*/
+.mypy_cache/
+.ruff_cache/
+p1-6-real-index-*/
+
 # 临时文件
 tmp/
 temp/

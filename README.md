@@ -1,207 +1,201 @@
-# 轻松食 · Agentic RAG 智能营养助手
+# 轻松食 · Eat Agent
 
-基于 **智谱AI + LangChain + LangGraph** 的智能检索增强生成（RAG）Agent，专注于食物热量查询与餐食搭配推荐。
+> 面向个人与小众平台的 Agentic RAG 智能营养助手。它会先判断用户想做什么，再检查完成任务所需的信息是否齐全；信息不足时主动追问，信息满足后才进入检索、工具调用和回答生成。
 
-## 核心特性
+[![CI](https://github.com/jiping730/eat-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/jiping730/eat-agent/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![React](https://img.shields.io/badge/React-Vite-61DAFB?logo=react&logoColor=20232A)](frontend/)
 
-- **意图识别** — 自动判断用户意图（热量查询 / 餐食规划 / 追问 / 联网搜索 / 通用问答）
-- **知识库检索** — 基于 FAISS 向量库的语义检索，支持相似度阈值过滤
-- **联网搜索** — 集成 Tavily 搜索引擎，支持实时信息查询
-- **多轮对话** — 短期记忆 + 长期记忆（FAISS 向量化），支持追问与上下文关联
-- **GraphRAG** — 可选 Neo4j 图检索，支持食物搭配关系查询
-- **MCP 协议** — 提供本地 MCP Server，支持外部工具调用
-- **Web 界面** — FastAPI API + 移动端优先 React 界面，开箱即用
+## 项目定位
 
-## 实施记录
+这是一个可运行、可测试、可解释的营养问答 Agent 项目，不是只展示 Prompt 的 Demo。
 
-已完成阶段的实际改动、对应 Git 提交、测试结果和已知边界，见：[项目实施记录](docs/implementation-record.md)。
+- **统一 Agent 主链路**：CLI、API 和 Web 都通过同一个 ConversationRuntime → LangGraph Workflow 执行。
+- **通用追问引擎 Grill**：按任务画像定义必需字段、字段校验和确认门禁，避免信息不完整时过早执行。
+- **本地 Agentic RAG**：FAISS 向量召回与词法召回融合，支持查询改写、确定性重排、权限过滤和来源追溯。
+- **单端口 Web 应用**：FastAPI 提供 API，并托管移动端优先的 React 前端，生产访问统一使用 5000 端口。
+- **小型平台边界**：支持 JWT、会话持久化、基础多租户、个人档案、个人知识库和 Docker Compose；不以万人级分布式平台为目标。
 
-后续开发的唯一主线和优先级清单见：[项目实施主线](docs/implementation-roadmap.md)。其中 `P0-5` 专指 Grill v1 产品化；历史记录中的 `P05` 企业级运行保障是另一套已完成的阶段编号。
+## 核心能力
 
-## 项目结构
+| 模块 | 当前实现 |
+| --- | --- |
+| Agent 工作流 | LangGraph 状态图、意图识别、记忆/档案、Grill 校验、Tool Registry、答案生成与安全校验 |
+| Grill 追问 | 任务画像、字段类型与依赖、否定/拒答识别、换题、多任务顺序队列、确认后执行、结构化决策输出 |
+| RAG | 文档清洗与版本化入库、FAISS + 词法多路召回、查询改写、轻量确定性重排、来源与证据片段追溯 |
+| 模型与工具 | LiteLLM 模型网关、智谱兼容中转站、超时/重试/预算、MCP 本地工具、工具权限与审计 |
+| 平台能力 | FastAPI、JWT/API Key、会话与用户隔离、基础租户角色、个人档案、个人知识库、SSE 流式对话 |
+| 质量保障 | 82 条确定性评测用例、RAG/Grill/安全指标、pytest 覆盖率门禁、Ruff/Black/isort/Mypy、Playwright E2E、Helm 静态校验 |
 
-```
-agent1/
-├── main.py                  # CLI 入口（调用统一 ConversationRuntime）
-├── config.py                # 全局配置（Pydantic Settings）
-├── .env.example             # 本地配置模板（真实 .env 不入 Git）
-├── requirements.txt         # 依赖清单
-├── pyproject.toml           # 项目元数据、pytest 与工具配置
-├── Dockerfile               # 应用镜像构建
-├── docker-compose.yml       # 本地小型平台编排
-├── alembic.ini              # 数据库迁移入口
-│
-├── agent/                   # Agent 核心
-│   ├── agent_executor.py    # 旧入口兼容适配器，转发到统一 Workflow
-│   ├── tools.py             # 工具定义（知识库检索、联网搜索）
-│   └── prompt.py            # ReAct 提示模板
-│
-├── core/                    # 工作流与记忆
-│   ├── conversation_runtime.py # Web、CLI、兼容入口共用的会话运行时
-│   ├── tool_registry.py     # 统一工具注册与执行边界
-│   ├── workflow.py          # LangGraph 状态图（意图识别→记忆检索→Grill→规划→执行→生成）
-│   ├── memory.py            # 短期/长期记忆管理器
-│   ├── graph_rag.py         # GraphRAG 引擎（Neo4j）
-│   └── skills/              # 技能模块
-│       ├── calorie_query/   # 热量查询技能
-│       └── meal_planner/    # 餐食规划技能
-│
-├── rag/                     # 检索增强生成
-│   ├── embeddings.py        # 智谱 Embedding 封装
-│   ├── vector_store.py      # FAISS 向量库构建与加载
-│   └── retriever.py         # 带相似度阈值的检索器
-│
-├── utils/                   # 工具函数
-│   ├── llm.py               # 智谱 LLM 封装
-│   ├── callbacks.py         # LangChain 性能回调
-│   └── performance.py       # 性能统计装饰器
-│
-├── mcp_servers/             # MCP 服务器
-│   ├── local_server.py      # 本地 MCP Server（热量查询 + 餐食规划）
-│   └── firecrawl_client.py  # Firecrawl 爬虫客户端
-│
-├── front/                   # FastAPI API 包
-│   ├── app.py               # API、认证、会话和健康检查入口
-│   └── schemas.py           # API 请求/响应模型
-│
-├── frontend/                # 新版 React 移动端优先前端（生产由 5000 托管，开发可用 5173）
-│   ├── src/                 # 页面、组件、API service 和设计令牌
-│   ├── docs/                # 设计系统和 UI 验收记录
-│   └── README.md            # 前端启动与接口说明
-│
-├── config/grill_profiles/   # Grill 任务画像配置
-├── migrations/              # Alembic 数据库迁移
-├── scripts/                 # 启停、迁移、备份与 Docker 运维脚本
-├── tests/                   # 全部自动化测试（单元、集成、浏览器）
-├── evaluation/              # RAG / Grill 评测样例
-├── docs/                    # 实施主线、阶段记录和专项说明（入口见 docs/README.md）
-├── deploy/                  # 可选 Kubernetes/监控部署清单
-└── data/                    # 本地运行数据（索引与知识文档）
-    ├── documents/           # 知识文档（.txt）
-    ├── vector_store/        # FAISS 索引
-    └── memory/              # 记忆存储
-```
+## 架构概览
 
-## 工作流
-
-```
-Web / CLI / 兼容入口
-          ↓
-ConversationRuntime
-          ↓
-LangGraph Workflow
-          ↓
-意图识别 → 记忆检索 → Grill 信息完整性检查 → 行动规划
-                                      ↓
-                              Tool Registry
-                          ┌──────────┼──────────┐
-                     知识库检索   联网搜索   餐食/热量工具
-                                      ↓
-                              答案生成 → 反思存档
-```
+~~~mermaid
+flowchart LR
+    U[Web / CLI / API] --> R[ConversationRuntime]
+    R --> W[LangGraph Workflow]
+    W --> I[Intent Router]
+    W --> M[Memory & Profile]
+    W --> G[Grill Engine<br/>信息完整性与追问]
+    G -->|信息不足| Q[返回追问]
+    G -->|信息满足| T[Tool Registry]
+    T --> H[Hybrid Retriever<br/>FAISS + 词法召回 + 重排]
+    T --> C[本地 MCP / 领域工具]
+    H --> A[答案生成]
+    C --> A
+    A --> S[安全与来源校验]
+    S --> P[(SQLite / PostgreSQL)]
+    S --> O[流式响应 / 最终回答]
+~~~
 
 ## 快速开始
 
-### 1. 环境要求
+### 方式一：Docker Compose（推荐）
 
-- Python >= 3.12
-- 智谱AI API Key（[获取地址](https://open.bigmodel.cn/)）
+前置条件：已安装并启动 Docker Desktop。
 
-### 2. 安装依赖
+~~~bash
+copy .env.example .env          # Windows
+# cp .env.example .env          # Linux/macOS
+~~~
 
-```bash
+在 .env 中至少配置模型网关所需的 Key、ANTHROPIC_API_BASE 和 JWT_SECRET。真实密钥只放在本地 .env 或部署环境，不要提交到 Git。
+
+~~~bash
+docker compose up -d --build
+docker compose ps
+~~~
+
+打开 <http://127.0.0.1:5000>。常用运维命令：
+
+~~~bash
+docker compose logs -f eat-agent
+docker compose restart eat-agent
+docker compose down
+~~~
+
+Compose 会启动 PostgreSQL、Redis 和应用；应用启动时执行迁移检查，健康检查地址为 /healthz。
+
+### 方式二：本地 Python + React 生产构建
+
+~~~bash
 python -m venv .venv
-.venv\Scripts\activate      # Windows
-# source .venv/bin/activate  # Linux/macOS
-copy .env.example .env      # Windows
-# cp .env.example .env      # Linux/macOS
-pip install -r requirements.txt
-```
+.venv\Scripts\activate              # Windows PowerShell
+python -m pip install -r requirements.txt
+copy .env.example .env
+~~~
 
-### 3. 配置环境变量
+本地不启动 PostgreSQL/Redis 时，可在 .env 使用 SQLite：
 
-在 `.env` 文件中填写：
-
-```env
-# Anthropic 兼容中转站；Key 由部署环境注入，不要提交真实值。
-ANTHROPIC_API_KEY=your_relay_api_key_here
-ANTHROPIC_API_BASE=https://api.chineseall.com
+~~~env
+DATABASE_URL=sqlite:///data/app.db
+AUTO_CREATE_SCHEMA=true
+JWT_SECRET=replace-with-a-local-random-secret
 LLM_MODEL=glm-5.3-flash
-LLM_PRIMARY_PROVIDER=anthropic
-LLM_FALLBACK_PROVIDER=anthropic
-TAVILY_API_KEY=your_tavily_key     # 可选，用于联网搜索
-NEO4J_URI=bolt://localhost:7687    # 可选，用于 GraphRAG
-NEO4J_USER=neo4j
-NEO4J_PASSWORD=your_password
-```
+LLM_INTENT_MODEL=glm-5.3-flash
+LLM_ANSWER_MODEL=glm-5.3-flash
+~~~
 
-### 4. 准备知识文档
+构建前端并启动单端口服务：
 
-将 `.txt` 格式的知识文档放入 `data/documents/` 目录，首次运行时自动构建向量索引。
-
-### 5. 启动
-
-**CLI 模式：**
-
-```bash
-python main.py
-```
-
-**Web 模式（单端口）：**
-
-```bash
+~~~bash
 cd frontend
 npm ci
 npm run build
 cd ..
 python front/app.py
-# 访问 http://localhost:5000；FastAPI 同时提供 API 和 React 页面
-```
+~~~
 
-**React 开发模式（可选）：**
+访问 <http://127.0.0.1:5000>。前端开发热更新可单独运行 npm run dev，默认使用 5173，但它只是开发入口；日常使用和验收以 5000 为准。
 
-```bash
-cd frontend
-npm ci
-copy .env.example .env.local  # Windows
-npm run dev
-# 访问 http://localhost:5173；仅用于前端热更新开发
-```
+### 模型配置
 
-React 前端是项目唯一的 Web 界面；生产构建由 FastAPI 在 `5000` 端口托管，`front/` 仅提供 API 和静态文件托管。真实接口默认关闭 mock；只有将 `VITE_USE_MOCK_API=true` 写入 `frontend/.env.local` 时才使用本地预览数据。
+项目通过 LiteLLM 统一模型调用。当前配置可使用兼容中转站和 glm-5.3-flash：
 
-**Docker 模式：**
+~~~env
+ANTHROPIC_API_KEY=your_relay_key
+ANTHROPIC_API_BASE=https://your-compatible-relay.example/v1
+LLM_PRIMARY_PROVIDER=anthropic
+LLM_FALLBACK_PROVIDER=anthropic
+LLM_MODEL=glm-5.3-flash
+~~~
 
-```bash
-docker compose up -d --build
-# 访问 http://localhost:5000
-```
+模型不可用时，项目可以进入结构化离线降级模式；这不等同于真实模型回答。前端 mock 仅在显式设置 VITE_USE_MOCK_API=true 时启用。
 
-### 6. 测试
+## 测试与评测
 
-```bash
-pytest -m "not e2e"       # 默认测试集
-pytest -m e2e              # 浏览器验收，需要已启动服务和 Playwright
-```
+安装开发依赖后运行默认回归：
 
-## 配置说明
+~~~bash
+pytest -q -m "not e2e"
+~~~
 
-主要配置项在 `config.py` 中，通过 Pydantic Settings 管理：
+运行确定性评测和质量门禁：
 
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `llm_model` | `glm-4-flash` | 智谱 LLM 模型 |
-| `embedding_model` | `embedding-2` | 智谱 Embedding 模型 |
-| `short_term_size` | `10` | 短期记忆保留轮数 |
-| `long_term_top_k` | `5` | 长期记忆检索数量 |
-| `use_graphrag` | `False` | 是否启用 GraphRAG |
-| `enable_mcp` | `True` | 是否启用 MCP |
+~~~bash
+python -m evaluation.runner \
+  --suite all \
+  --mode deterministic \
+  --min-rag-recall 0.90 \
+  --min-grill-accuracy 0.90 \
+  --max-invalid-retrieval-rate 0.15 \
+  --min-safety-pass-rate 0.90
+~~~
 
-## 可选服务
+评测输出包含 JSON 报告和控制台摘要，报告写入 evaluation/reports/latest.json。当前评测集为 **82 条**：18 条 RAG、64 条 Grill/安全与对话决策用例，覆盖 Recall@K、MRR、来源覆盖率、无效检索率、动作准确率、追问字段准确率、过早回答率、过度追问率和安全门禁。
 
-- **联网搜索** — 需配置 `TAVILY_API_KEY`，用于实时信息查询
-- **GraphRAG** — 需运行 Neo4j 并配置连接信息，用于食物搭配关系图查询
-- **MCP Server** — 运行 `python mcp_servers/local_server.py` 启动本地 MCP 服务
+RAGAS 是可选的手动评测能力，需要额外安装 .[eval] 并提供本地回答快照；它不进入普通 push CI，也不会自动上传真实用户对话。具体格式见 [评测说明](docs/evaluation.md)。
+
+浏览器验收需要 Playwright 和已启动的 5000 服务：
+
+~~~bash
+python -m pip install -e ".[dev,e2e]"
+python -m playwright install chromium
+pytest -q -m e2e
+~~~
+
+## 项目结构
+
+~~~text
+.
+├── main.py                  # CLI 入口
+├── config.py                # Pydantic Settings 配置入口
+├── front/                   # FastAPI 应用、认证、API 和静态文件托管
+├── frontend/                # React/Vite Web 前端
+├── core/                    # Workflow、Runtime、Grill、记忆、工具注册
+├── agent/                   # 旧入口兼容适配器和提示/工具定义
+├── rag/                     # 文档入库、FAISS、词法/向量检索与重排
+├── evaluation/              # 评测集、固定语料、运行器、指标和报告
+├── tests/                   # 单元、集成、安全、并发和浏览器测试
+├── data/                    # 本地知识文档、索引和运行数据
+├── migrations/              # Alembic 数据库迁移
+├── scripts/                 # 迁移、备份、恢复、清理和运维脚本
+├── deploy/                  # Helm/Kubernetes 清单（可选）
+├── docs/                    # 开发主线、实施记录和专项文档
+├── Dockerfile               # 前端构建 + Python 应用镜像
+├── docker-compose.yml       # 本地小型平台编排
+├── pyproject.toml           # 包元数据、依赖、测试和质量工具配置
+└── .env.example             # 配置模板；真实 .env 不入 Git
+~~~
+
+根目录中的单独文件大多属于标准项目入口或工具配置，不需要为了“看起来整齐”而移动；测试缓存、运行数据库和临时索引均已加入忽略规则，属于本地可再生成产物。
+
+## 文档导航
+
+- [项目实施主线](docs/implementation-roadmap.md)：阶段优先级、完成状态和后续边界。
+- [项目实施记录](docs/implementation-record.md)：已经实际完成的阶段、改动、验收和已知限制。
+- [评测说明](docs/evaluation.md)：82 条评测集、指标、质量门禁和 RAGAS 手动评测。
+- [前端并入记录](docs/frontend-integration.md)：React 前端、单端口托管和接口适配说明。
+- [文档总览](docs/README.md)：其他阶段实施文档和专项说明入口。
+
+## 当前边界
+
+项目以个人长期使用和少量租户的小型平台为目标，当前明确保留以下边界：
+
+- 默认采用单体应用和 Docker Compose；SQLite 是本地默认路线，PostgreSQL 是可选升级路线。
+- Kubernetes/Helm 清单已具备并可做 lint/render 静态校验，但未宣称真实集群、Ingress、HPA 或高可用验收完成。
+- RAGAS 只支持手动评测；LangSmith 当前未接入，README 不将其描述为已实现能力。
+- 饮食记录的部分数据仍是本机保存，前端会明确标注“服务端接口待接入”，不会伪装成已同步。
+- 暂不建设企业 SSO、复杂 RBAC、分布式任务队列、独立向量数据库、跨区域容灾或万人级多租户基础设施。
 
 ## License
 
