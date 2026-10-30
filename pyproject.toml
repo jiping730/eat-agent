@@ -81,8 +81,11 @@ Issues = "https://github.com/yourusername/agentic-rag/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["agent*", "rag*", "core*", "utils*", "mcp_servers*", "front*"]
-exclude = ["tests", "evaluation", "data", "faiss_index", "logs"]
+include = ["agent*", "rag*", "core*", "utils*", "mcp_servers*", "front*", "evaluation*"]
+exclude = ["tests", "data", "faiss_index", "logs"]
+
+[tool.setuptools.package-data]
+evaluation = ["*.json", "fixtures/*.json"]
 
 # 可选工具配置
 [tool.black]

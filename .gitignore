@@ -38,5 +38,8 @@ temp/
 *.sqlite
 *.sqlite3
 
+# 评测运行产物（CI 可作为 artifact 保存，避免把运行时间和结果提交进代码）
+evaluation/reports/*.json
+
 # PostgreSQL backup artifacts
 backups/

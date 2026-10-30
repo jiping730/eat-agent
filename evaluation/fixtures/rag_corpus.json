@@ -1,0 +1,34 @@
+[
+  {
+    "content": "鸡胸肉是常见的优质蛋白质来源，适合搭配蔬菜和全谷物。",
+    "metadata": {
+      "source": "nutrition/protein.txt",
+      "title": "蛋白质来源",
+      "access_groups": ["public"]
+    }
+  },
+  {
+    "content": "鸡胸肉每100克的热量会随生熟状态和品牌变化，查询时需要说明计量口径。",
+    "metadata": {
+      "source": "nutrition/calorie.txt",
+      "title": "热量查询",
+      "access_groups": ["public"]
+    }
+  },
+  {
+    "content": "减重期间应关注总热量、蛋白质、蔬菜和长期可执行性，不建议极端节食。",
+    "metadata": {
+      "source": "nutrition/weight-loss.txt",
+      "title": "减重建议",
+      "access_groups": ["public"]
+    }
+  },
+  {
+    "content": "花生过敏者应避开花生及可能含花生的食品，必要时咨询专业人士。",
+    "metadata": {
+      "source": "safety/allergens.txt",
+      "title": "过敏原安全",
+      "access_groups": ["public"]
+    }
+  }
+]

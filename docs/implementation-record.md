@@ -992,6 +992,20 @@ P1-6/P2-3 浏览器回归：2 passed（真实 JWT 登录后访问知识库页面
 
 ## 24. 当前已知边界
 
+### 24.1 评测体系优化实施记录
+
+本次按“统一数据结构 → 确定性运行器 → 指标 → 报告 → 可选 RAGAS → CI 门禁 → 扩充用例”的顺序完成评测能力建设：
+
+- 扩展 `EvalCase`，统一 RAG 与 Grill 的套件、分类、动作、追问字段、来源、上下文和安全约束；保留旧字段兼容能力。
+- 新增 `evaluation/dataset.py`，在加载阶段把旧版 Grill `name/task` 转换为 `case_id/expected_task` 并执行严格校验。
+- 新增固定 RAG fixture corpus 和 `evaluation/runner.py`，评测不依赖个人本地知识库、FAISS 索引或外部模型。
+- 新增 Recall@K、MRR、来源覆盖率、无效检索率、Grill action accuracy、追问字段准确率、过早回答率、过度追问率和安全门禁指标等确定性指标。
+- 新增 `evaluation/reports/latest.json` 运行报告和 CI artifact；报告默认不提交仓库，避免混入运行时间或真实对话。
+- 新增可选 RAGAS 适配器，需显式传入本地回答快照，评测 Faithfulness、Context Precision、Context Recall 和 Answer Relevancy；LangSmith 尚未接入。
+- 将确定性门禁接入 GitHub Actions，并把 RAG/Grill 评测集扩充至 82 条（18 条 RAG、64 条 Grill），同时补充安全约束样本。
+
+验收结果：确定性评测 `82/82` 通过；新增评测及受影响 RAG/Grill 回归 `72 passed`；Ruff、isort、mypy 通过；覆盖率回归为 `85.13%`。完整非浏览器回归中另有 4 条既有模型网关测试受本地 `.env` 中当前中转 provider/model 配置影响失败，不属于本次评测改动。
+
 本记录只记录已经实际完成的 Grill Engine、P01、P02、P03、P04、P05、P0-8、P1-0～P1-6、P2-1～P2-5 和 P2-4 运行维护基础闭环，不把后续计划写成已完成能力。
 
 当前仍有以下边界：

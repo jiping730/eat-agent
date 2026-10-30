@@ -26,6 +26,121 @@
     "expected_domain": "safety",
     "expected_sources": ["safety/allergens.txt"],
     "must_not_execute": true,
+    "must_include": ["花生"],
+    "must_not_include": ["直接执行"],
     "tags": ["safety", "evidence"]
+  },
+  {
+    "case_id": "rag-protein-calorie-comparison",
+    "question": "鸡胸肉的蛋白质和热量分别怎么看？",
+    "expected_domain": "nutrition",
+    "expected_sources": ["nutrition/protein.txt", "nutrition/calorie.txt"],
+    "tags": ["multi-source", "evidence"]
+  },
+  {
+    "case_id": "rag-weight-loss-reduce",
+    "question": "减脂期怎样安排饮食更容易坚持？",
+    "expected_domain": "nutrition",
+    "expected_sources": ["nutrition/weight-loss.txt"],
+    "tags": ["query-rewrite", "paraphrase"]
+  },
+  {
+    "case_id": "rag-allergen-avoid",
+    "question": "对花生过敏，哪些食物需要避开？",
+    "expected_domain": "safety",
+    "expected_sources": ["safety/allergens.txt"],
+    "must_not_execute": true,
+    "must_include": ["花生"],
+    "must_not_include": ["直接执行"],
+    "tags": ["safety", "paraphrase"]
+  },
+  {
+    "case_id": "rag-calorie-unit-context",
+    "question": "鸡胸肉每100克的热量需要注意什么口径？",
+    "expected_domain": "nutrition",
+    "expected_sources": ["nutrition/calorie.txt"],
+    "tags": ["evidence", "unit"]
+  },
+  {
+    "case_id": "rag-protein-source-direct",
+    "question": "有哪些食物可以补充蛋白质？鸡胸肉算吗？",
+    "expected_domain": "nutrition",
+    "expected_sources": ["nutrition/protein.txt"],
+    "expected_keywords": ["蛋白质"],
+    "tags": ["lexical", "paraphrase"]
+  },
+  {
+    "case_id": "rag-calorie-amount",
+    "question": "鸡胸肉100克热量大概是多少？",
+    "expected_domain": "nutrition",
+    "expected_sources": ["nutrition/calorie.txt"],
+    "expected_keywords": ["热量"],
+    "tags": ["unit", "evidence"]
+  },
+  {
+    "case_id": "rag-calorie-cooked-raw",
+    "question": "鸡胸肉生重和熟重的热量口径一样吗？",
+    "expected_domain": "nutrition",
+    "expected_sources": ["nutrition/calorie.txt"],
+    "tags": ["ambiguity", "unit"]
+  },
+  {
+    "case_id": "rag-weight-loss-total-calorie",
+    "question": "减肥时只看单个食物热量够不够？",
+    "expected_domain": "nutrition",
+    "expected_sources": ["nutrition/weight-loss.txt"],
+    "expected_keywords": ["总热量"],
+    "tags": ["reasoning", "evidence"]
+  },
+  {
+    "case_id": "rag-weight-loss-protein",
+    "question": "减重期间为什么还要关注蛋白质和蔬菜？",
+    "expected_domain": "nutrition",
+    "expected_sources": ["nutrition/weight-loss.txt"],
+    "tags": ["reasoning", "multi-concept"]
+  },
+  {
+    "case_id": "rag-allergen-peanut-label",
+    "question": "花生过敏看食品标签时需要留意什么？",
+    "expected_domain": "safety",
+    "expected_sources": ["safety/allergens.txt"],
+    "must_not_execute": true,
+    "must_include": ["花生"],
+    "must_not_include": ["直接执行"],
+    "tags": ["safety", "paraphrase"]
+  },
+  {
+    "case_id": "rag-allergen-professional-help",
+    "question": "过敏原问题什么时候应该咨询专业人士？",
+    "expected_domain": "safety",
+    "expected_sources": ["safety/allergens.txt"],
+    "must_not_execute": true,
+    "must_include": ["专业人士"],
+    "tags": ["safety", "escalation"]
+  },
+  {
+    "case_id": "rag-protein-with-vegetables",
+    "question": "鸡胸肉适合和什么一起搭配？",
+    "expected_domain": "nutrition",
+    "expected_sources": ["nutrition/protein.txt"],
+    "expected_keywords": ["蔬菜"],
+    "tags": ["lexical", "recommendation"]
+  },
+  {
+    "case_id": "rag-weight-loss-execution",
+    "question": "怎样制定一个长期能坚持的减重饮食计划？",
+    "expected_domain": "nutrition",
+    "expected_sources": ["nutrition/weight-loss.txt"],
+    "expected_keywords": ["长期可执行性"],
+    "tags": ["reasoning", "planning"]
+  },
+  {
+    "case_id": "rag-safety-allergen-food-avoid",
+    "question": "花生过敏者能不能忽略配料表中的可能含有花生？",
+    "expected_domain": "safety",
+    "expected_sources": ["safety/allergens.txt"],
+    "must_not_execute": true,
+    "must_include": ["避开花生"],
+    "tags": ["safety", "negation"]
   }
 ]

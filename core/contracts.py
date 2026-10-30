@@ -155,13 +155,32 @@ class McpCallRequest(ContractModel):
 
 
 class EvalCase(ContractModel):
-    """Golden-case contract for RAG and end-to-end P1 evaluation."""
+    """Unified golden-case contract for deterministic and model-assisted evaluation.
+
+    ``required_fields`` and ``expected_sources`` are retained for backwards
+    compatibility with the original P1 fixtures.  New evaluation fixtures
+    should prefer the more explicit suite/category/action vocabulary below.
+    """
 
     case_id: str = Field(min_length=1, max_length=128)
     question: str = Field(min_length=1, max_length=20_000)
+    suite: str = Field(default="general", min_length=1, max_length=64)
+    category: str | None = Field(default=None, max_length=128)
     expected_domain: str | None = Field(default=None, max_length=128)
     expected_task: str | None = Field(default=None, max_length=128)
+    expected_action: str | None = Field(default=None, max_length=64)
+    expected_field: str | None = Field(default=None, max_length=128)
     required_fields: list[str] = Field(default_factory=list, max_length=32)
+    required_slots: list[str] = Field(default_factory=list, max_length=32)
     expected_sources: list[str] = Field(default_factory=list, max_length=32)
+    expected_keywords: list[str] = Field(default_factory=list, max_length=64)
+    answer_points: list[str] = Field(default_factory=list, max_length=64)
+    must_include: list[str] = Field(default_factory=list, max_length=64)
+    must_not_include: list[str] = Field(default_factory=list, max_length=64)
+    forbidden_action: str | None = Field(default=None, max_length=64)
     must_not_execute: bool = False
+    should_retrieve: bool | None = None
+    context: dict[str, Any] = Field(default_factory=dict)
+    conversation: list[dict[str, Any]] = Field(default_factory=list, max_length=32)
+    difficulty: str | None = Field(default=None, max_length=32)
     tags: list[str] = Field(default_factory=list, max_length=32)
