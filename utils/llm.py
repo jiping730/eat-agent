@@ -11,7 +11,10 @@ from typing import Any, Callable, List, Literal, Optional
 
 from langchain.llms.base import LLM
 from langchain_core.callbacks.manager import CallbackManagerForLLMRun
-from zhipuai import ZhipuAI
+try:
+    from zhipuai import ZhipuAI
+except ImportError:  # pragma: no cover - the legacy SDK is intentionally optional.
+    ZhipuAI = None  # type: ignore[assignment,misc]
 
 from config import settings
 from core.contracts import ModelRouteDecision, ModelRouteRequest
@@ -64,6 +67,8 @@ def _estimate_cost(input_tokens: int | None, output_tokens: int | None) -> float
 class CustomZhipuChat(LLM):
     def __init__(self):
         super().__init__()
+        if ZhipuAI is None:
+            raise RuntimeError("旧版 ZhipuAI SDK 未安装，请使用 LiteLLM 兼容中转站")
         # Bypass Pydantic field validation for the SDK client.
         object.__setattr__(self, "client", ZhipuAI(api_key=settings.zhipuai_api_key))
         object.__setattr__(self, "model", settings.llm_model)

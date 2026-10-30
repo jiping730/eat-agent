@@ -4,12 +4,18 @@ try:
 except ImportError:
     _has_embeddings = False
     from typing import List
-    from zhipuai import ZhipuAI
     from config import settings
     from langchain_core.embeddings import Embeddings  # 导入基类
 
+    try:
+        from zhipuai import ZhipuAI
+    except ImportError:  # pragma: no cover - the legacy SDK is intentionally optional.
+        ZhipuAI = None  # type: ignore[assignment,misc]
+
     class CustomZhipuEmbeddings(Embeddings):  # 继承 Embeddings
         def __init__(self):
+            if ZhipuAI is None:
+                raise RuntimeError("旧版 ZhipuAI SDK 未安装，请配置兼容的向量服务")
             self.client = ZhipuAI(api_key=settings.zhipuai_api_key)
             self.model = settings.embedding_model
 
