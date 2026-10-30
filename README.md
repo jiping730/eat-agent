@@ -1,10 +1,16 @@
-# 轻松食 · Eat Agent
+# 轻松食 · Nutrition Agent
 
 > 面向个人与小众平台的 Agentic RAG 智能营养助手。它会先判断用户想做什么，再检查完成任务所需的信息是否齐全；信息不足时主动追问，信息满足后才进入检索、工具调用和回答生成。
 
 [![CI](https://github.com/jiping730/nutrition-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/jiping730/nutrition-agent/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-Vite-61DAFB?logo=react&logoColor=20232A)](frontend/)
+
+<div align="center">
+  <img src="./frontend/docs/screenshots/eat-home-desktop.png" alt="轻松食首页" width="920" />
+</div>
+
+<p align="center"><em>先理解问题，再在信息足够时给出营养建议。</em></p>
 
 ## 项目定位
 
@@ -26,6 +32,57 @@
 | 模型与工具 | LiteLLM 模型网关、智谱兼容中转站、超时/重试/预算、MCP 本地工具、工具权限与审计 |
 | 平台能力 | FastAPI、JWT/API Key、会话与用户隔离、基础租户角色、个人档案、个人知识库、SSE 流式对话 |
 | 质量保障 | 82 条确定性评测用例、RAG/Grill/安全指标、pytest 覆盖率门禁、Ruff/Black/isort/Mypy、Playwright E2E、Helm 静态校验 |
+
+## 产品体验
+
+截图来自当前 React 前端的真实页面，覆盖从进入首页、主动补充信息，到生成餐食建议和记录饮食的完整路径。
+
+<table>
+  <tr>
+    <td width="50%"><img src="./frontend/docs/screenshots/eat-home-mobile-fixed.png" alt="移动端首页" /></td>
+    <td width="50%"><img src="./frontend/docs/screenshots/eat-grill-mobile.png" alt="Grill 主动追问" /></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>移动端首页</strong><br />快捷进入营养问答、饮食记录和目标设置</td>
+    <td align="center"><strong>Grill 主动追问</strong><br />缺少关键字段时，只追问当前任务所需的信息</td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="./frontend/docs/screenshots/eat-plan-mobile.png" alt="餐食计划回答" /></td>
+    <td width="50%"><img src="./frontend/docs/screenshots/eat-records-desktop.png" alt="饮食记录页面" /></td>
+  </tr>
+  <tr>
+    <td align="center"><strong>餐食计划</strong><br />信息确认后生成可解释的餐食建议</td>
+    <td align="center"><strong>饮食记录</strong><br />按日期回看饮食，并为后续营养分析提供输入</td>
+  </tr>
+</table>
+
+## 一次完整交互
+
+```text
+用户问题
+   ↓
+意图识别与任务判断
+   ↓
+Grill 检查任务字段
+   ├─ 信息不足：返回一个必要追问，等待用户补充
+   └─ 信息满足：进入检索、工具调用或直接回答
+                    ↓
+          来源追溯与安全校验
+                    ↓
+              流式输出最终答案
+```
+
+这条链路解决的是 Agent 应用中常见的“过早回答”和“盲目调用工具”问题：例如用户只说“我想减脂”，系统先给出方向性建议；只有用户明确要求制定餐食计划时，才进入餐食规划所需的信息收集。
+
+## 技术亮点
+
+| 关注点 | 项目做法 | 解决的问题 |
+| --- | --- | --- |
+| 信息完整性 | Grill 任务画像、字段校验、依赖关系、拒答/否定识别和确认门禁 | 避免信息不足时直接生成计划或调用工具 |
+| 检索质量 | FAISS 向量召回 + 词法召回 + 查询改写 + 确定性重排 | 提升同义表达下的命中率，减少无关上下文 |
+| Agent 工程化 | LangGraph 状态图、统一 Runtime、Tool Registry、MCP 网关 | 避免 CLI、Web 和旧入口各自维护一套 Agent |
+| 可解释性 | 来源元数据、证据片段、动作决策和追问字段可追溯 | 能回答“为什么追问”和“依据来自哪里” |
+| 可验证性 | 82 条评测集、RAG/Grill/安全指标、CI 质量门禁 | 每次改动都能发现关键行为回归 |
 
 ## 架构概览
 
