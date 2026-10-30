@@ -2,7 +2,7 @@
 
 > 面向个人与小众平台的 Agentic RAG 智能营养助手。它会先判断用户想做什么，再检查完成任务所需的信息是否齐全；信息不足时主动追问，信息满足后才进入检索、工具调用和回答生成。
 
-[![CI](https://github.com/jiping730/eat-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/jiping730/eat-agent/actions/workflows/ci.yml)
+[![CI](https://github.com/jiping730/nutrition-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/jiping730/nutrition-agent/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![React](https://img.shields.io/badge/React-Vite-61DAFB?logo=react&logoColor=20232A)](frontend/)
 
