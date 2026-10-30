@@ -111,11 +111,13 @@ class _McpServerConnection:
         if self._loop is None or self._session is None:
             raise McpGatewayError(f"MCP Server 未连接: {self.config.name}")
 
+        session = self._session
+
         async def invoke() -> Any:
             if operation == "list_tools":
-                return await self._session.list_tools()
+                return await session.list_tools()
             if operation == "call_tool":
-                return await self._session.call_tool(*args)
+                return await session.call_tool(*args)
             raise McpGatewayError(f"未知 MCP 操作: {operation}")
 
         future: Future[Any] = asyncio.run_coroutine_threadsafe(invoke(), self._loop)
@@ -324,10 +326,13 @@ class McpToolGateway:
 
     def _handler(self, contract: McpToolContract) -> Callable[[str, Mapping[str, Any]], ToolResult]:
         def call(query: str, context: Mapping[str, Any]) -> ToolResult:
-            fields = context.get("fields") if isinstance(context.get("fields"), Mapping) else {}
-            supplied = context.get("mcp_arguments") if isinstance(context.get("mcp_arguments"), Mapping) else {}
-            arguments = dict(supplied)
-            properties = contract.input_schema.get("properties", {}) if isinstance(contract.input_schema, Mapping) else {}
+            raw_fields = context.get("fields")
+            fields: Mapping[str, Any] = raw_fields if isinstance(raw_fields, Mapping) else {}
+            raw_supplied = context.get("mcp_arguments")
+            supplied: Mapping[str, Any] = raw_supplied if isinstance(raw_supplied, Mapping) else {}
+            arguments: dict[str, Any] = dict(supplied)
+            raw_properties = contract.input_schema.get("properties", {})
+            properties: Mapping[str, Any] = raw_properties if isinstance(raw_properties, Mapping) else {}
             for key in properties:
                 if key not in arguments and key in fields:
                     arguments[key] = fields[key]

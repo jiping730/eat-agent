@@ -11,9 +11,10 @@ from queue import Queue
 from typing import Any, Callable, Iterator
 
 from config import settings
+from core.grill_engine import GrillContext, GrillEngine, get_profile
 from core.logging_config import configure_logging, fingerprint, log_event
-from core.memory import MemoryManager
 from core.mcp_gateway import McpGatewayError, McpServerRegistry, McpToolGateway
+from core.memory import MemoryManager
 from core.observability import (
     bind_observation_context,
     new_trace_id,
@@ -26,10 +27,9 @@ from core.observability import (
     reset_observation_context,
     start_span,
 )
-from core.profile import ProfileService
-from core.personal_knowledge import PersonalKnowledgeService
 from core.persistence import ConversationStore
-from core.grill_engine import GrillContext, GrillEngine, get_profile
+from core.personal_knowledge import PersonalKnowledgeService
+from core.profile import ProfileService
 from core.redis_support import RedisCoordinator
 from core.safety_guard import SafetyGuard, safety_summary
 from core.streaming import StreamCancelled, StreamEmitter

@@ -80,7 +80,7 @@ jobs:
           DATABASE_URL: sqlite:////tmp/eat-agent-e2e.db
           AUTO_CREATE_SCHEMA: "true"
           REDIS_URL: ""
-        run: pytest -q -m e2e test_browser_e2e.py
+        run: pytest -q -m e2e tests/test_browser_e2e.py
 
   helm:
     runs-on: ubuntu-latest
@@ -93,7 +93,7 @@ jobs:
             -v "$PWD:/work" \
             -w /work \
             alpine/helm:3.17.0 \
-            sh -c 'helm lint deploy/helm/eat-agent && helm template eat-agent deploy/helm/eat-agent >/tmp/eat-agent-rendered.yaml'
+            -c 'helm lint deploy/helm/eat-agent && helm template eat-agent deploy/helm/eat-agent >/tmp/eat-agent-rendered.yaml'
 
   image:
     runs-on: ubuntu-latest

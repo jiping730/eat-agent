@@ -65,9 +65,9 @@ def configure_logging(
         for handler in logger.handlers
     ):
         stream = sys.stderr if os.getenv("MCP_STDIO", "").lower() == "1" else sys.stdout
-        handler = logging.StreamHandler(stream)
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
+        stream_handler = logging.StreamHandler(stream)
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
     if log_file:
         path = os.path.abspath(os.path.expanduser(log_file))
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -80,8 +80,8 @@ def configure_logging(
             )
             file_handler.setFormatter(formatter)
             logger.addHandler(file_handler)
-    for handler in logger.handlers:
-        handler.setLevel(logger.level)
+    for configured_handler in logger.handlers:
+        configured_handler.setLevel(logger.level)
     logger.propagate = False
     return logger
 

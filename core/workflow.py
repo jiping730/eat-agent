@@ -95,12 +95,8 @@ def create_workflow(
         if previous_safety:
             previous_payload = SafetyDecision.model_validate(previous_safety)
             merged_safety = input_safety.model_dump(mode="json")
-            merged_safety["categories"] = list(
-                dict.fromkeys([*previous_payload.categories, *input_safety.categories])
-            )
-            merged_safety["redactions"] = list(
-                dict.fromkeys([*previous_payload.redactions, *input_safety.redactions])
-            )
+            merged_safety["categories"] = list(dict.fromkeys([*previous_payload.categories, *input_safety.categories]))
+            merged_safety["redactions"] = list(dict.fromkeys([*previous_payload.redactions, *input_safety.redactions]))
             merged_safety["prompt_injection"] = previous_payload.prompt_injection or input_safety.prompt_injection
             merged_safety["medical_risk"] = previous_payload.medical_risk or input_safety.medical_risk
             if previous_payload.action in {"block", "escalate", "refuse"}:
@@ -471,9 +467,9 @@ def create_workflow(
             execution_context["trace_id"] = state.get("trace_id")
             execution_context["user_id"] = state.get("user_id")
             execution_context["tenant_id"] = state.get("tenant_id")
-            execution_context["access_groups"] = (
-                (state.get("tenant_settings", {}) or {}).get("knowledge_scope") or ["public"]
-            )
+            execution_context["access_groups"] = (state.get("tenant_settings", {}) or {}).get("knowledge_scope") or [
+                "public"
+            ]
             if isinstance(execution_context.get("fields"), dict):
                 # MCP tool schemas describe top-level arguments; local tools
                 # continue to consume the same fields nested under context.
