@@ -239,6 +239,7 @@ def test_stream_reports_cancellation_from_workflow(tmp_path):
 
 
 def _seed_grill_conversation(store, conversation_id, context):
+    store.load(conversation_id, "grill-user")
     store.save_turn(
         conversation_id=conversation_id,
         user_id="grill-user",
